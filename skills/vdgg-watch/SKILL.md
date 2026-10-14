@@ -119,7 +119,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.vdgg-watch.m
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.example.vdgg-watch.mygoal.plist
 ```
 
-tick 起動の回は、tick が start と done を受け持つ。エージェントは run →(exit 3 なら proposal.md の修正案を埋めて最終メッセージで4点を伝える)だけを行い、start と done は呼ばない(hook も tick 起動中の done を拒否する)。スクリプトは、Read した SKILL.md と同じディレクトリの `scripts/vdgg-watch.sh` を使う(本文の `${CLAUDE_SKILL_DIR}` はそのディレクトリ)。無人実行は `--permission-mode dontAsk` で動き、lock 時点の `allow_tools` のツールは tick が自動で許可に加える(Slack などへの通知もこれで通る)。子の出力は `<G>/.claude/last-tick.log` に残る。
+tick 起動の回は、tick が start と done を受け持つ。エージェントは run →(exit 3 なら proposal.md の修正案を埋めて最終メッセージで4点を伝える)だけを行い、start と done は呼ばない(hook も tick 起動中の done を拒否する。tick は hook に印を付けて登録するので、途中でマーカーが消えたり tick のものでなくなったりすると、hook は全ツールを拒否する)。スクリプトは、Read した SKILL.md と同じディレクトリの `scripts/vdgg-watch.sh` を使う(本文の `${CLAUDE_SKILL_DIR}` はそのディレクトリ)。無人実行は `--permission-mode dontAsk` で動き、lock 時点の `allow_tools` のツールは tick が自動で許可に加える(Slack などへの通知もこれで通る)。子の出力は `<G>/.claude/last-tick.log` に残る。
 
 手動で回すときは従来どおり start → run → done。見張りの最中に tick を止めたいなら、cwd を `<G>` にして start する(tick は `<G>/.claude` のマーカーだけを見る)。
 

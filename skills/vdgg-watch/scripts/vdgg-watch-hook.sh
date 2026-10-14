@@ -3,6 +3,12 @@ set -euo pipefail
 export LC_ALL=C
 trap 'rc=$?; [ "$rc" -eq 0 ] || exit 2' EXIT
 
+# 理由だけを出して止める。done や lock を勧めると誤る場面(tick の回)で使う。
+halt() {
+    echo "$1" >&2
+    exit 2
+}
+
 deny() {
     echo "$1" >&2
     echo "見張りを終えるなら vdgg-watch.sh done、規則を変えるならユーザーが approvals/relock を置いてから vdgg-watch.sh lock すること" >&2
@@ -32,12 +38,21 @@ json="$(cat)"
 
 cwd="$(printf '%s' "$json" | jq -r '.cwd // empty')"
 marker="$cwd/.claude/.vdgg-watch-active"
-[ -e "$marker" ] || exit 0
+# 第1引数 tick は、tick が --settings で hook に付ける印。エージェントからは変えられない。
+# 印があるのにマーカーが無い・tick のものでないなら、見張りの前提が崩れているので止める。
+if [ "${1:-}" = tick ]; then
+    [ -e "$marker" ] || halt "tick 起動中なのに見張りのマーカーが無い: $marker"
+elif [ ! -e "$marker" ]; then
+    exit 0
+fi
 
-g="$(head -n 1 "$marker")"
-# 2行目が "tick ..." なら tick が起動した回。start と done は tick が受け持つ。
-tick_mode=0
-case "$(sed -n 2p "$marker")" in "tick "*) tick_mode=1 ;; esac
+{ IFS= read -r g || true; IFS= read -r line2 || true; } < "$marker"
+if [ "${1:-}" = tick ]; then
+    case "$line2" in
+        "tick "*) ;;
+        *) halt "tick 起動中なのにマーカーの2行目が tick のものではない" ;;
+    esac
+fi
 [ -d "$g" ] || deny "マーカーが指す目標ディレクトリが無い: $g"
 
 tool_name="$(printf '%s' "$json" | jq -r '.tool_name // empty')"
@@ -118,7 +133,9 @@ Bash)
         "bash \"$watch\" lock \"$g\""|"bash \"$watch\" run \"$g\"")
             exit 0 ;;
         "bash \"$watch\" done")
-            [ "$tick_mode" -eq 0 ] && exit 0 ;;
+            # 2行目が空でない(tick の回か、壊れたマーカー)なら、done は tick が受け持つ。印ありならここは必ず "tick ..." になっている。
+            [ -z "$line2" ] || halt "tick 起動中の回では done を呼ばない(start と done は tick が受け持つ)。run の結果を伝えて終えること"
+            exit 0 ;;
     esac
     consume_approval Bash && exit 0
     deny "Bash は vdgg-watch.sh の lock/run/done(スクリプトと<G>を二重引用符で囲んだ完全一致)のみ許可"
