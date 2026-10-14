@@ -80,10 +80,47 @@ Bashは `vdgg-watch.sh` の `lock "<G>"` / `run "<G>"` / `done` を、スクリ�
 bash "${CLAUDE_SKILL_DIR}/scripts/vdgg-watch.sh" done
 ```
 
-## 定期実行はClaude Desktopのlocal scheduled task
+## 定期実行は launchd が毎時 tick を呼び、止まっていれば claude を起動する
 
-local scheduled taskに `/vdgg-watch <G>` を登録する(Desktopアプリが起動中かつMacが起床中のときだけ動く)。cloud routineはローカルファイルを読めないため使わない。頻度は `<G>/goal.md` の `schedule:` 行(無ければ1日1回)に合わせ、この行を変えたらscheduled task側も更新する。
+`vdgg-watch.sh tick "<G>" <間隔秒>` は、証拠ログ(`<G>/evidence/`)と最終起動時刻のどちらも間隔より古いときだけ、`claude -p` をヘッドレスで起動して見張りを1回回す。新しければ何もしない。前回の実行が残したマーカーは、tick の PID が死んでいるか上限時間を過ぎていれば、子のプロセスグループを止めてから片付ける。子は上限時間(既定3600秒)を超えると TERM、5秒後に KILL で止める。間隔は goal.md の `schedule:` に合わせる(既定 86400 = 1日)。
 
-各回の流れ: start → run →(exit 3ならproposal.mdの修正案を埋めて最終メッセージで4点を伝える)→ done。通知はこの最終メッセージ(Claudeアプリの通知)を既定にする。Slackなどに送りたい場合は、そのツール名を `<G>/goal.md` の `allow_tools` に足してrelockする。
+launchd は毎時の `StartCalendarInterval` で tick を呼ぶ。Mac が寝ている間に過ぎた回は、起きたあとにまとめて1回実行される。Desktop アプリが閉じていても動く。launchd の下では PATH が細いので、`/bin/bash` と絶対パスを使い、claude と jq のある場所を PATH に入れる(`~` や変数は展開されない)。
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.vdgg-watch.mygoal</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/絶対パス/skills/vdgg-watch/scripts/vdgg-watch.sh</string>
+    <string>tick</string>
+    <string>/絶対パス/目標ディレクトリ</string>
+    <string>86400</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>VDGG_WATCH_CLAUDE</key><string>/絶対パス/claude</string>
+  </dict>
+  <key>StartCalendarInterval</key><dict><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/絶対パス/vdgg-watch.out.log</string>
+  <key>StandardErrorPath</key><string>/絶対パス/vdgg-watch.err.log</string>
+</dict>
+</plist>
+```
+
+登録と解除はユーザーが行う(エージェントは環境を恒久的に変える操作をしない)。上の plist を `~/Library/LaunchAgents/<Label>.plist` として保存してから、次を実行する:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.vdgg-watch.mygoal.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.example.vdgg-watch.mygoal.plist
+```
+
+tick 起動の回は、tick が start と done を受け持つ。エージェントは run →(exit 3 なら proposal.md の修正案を埋めて最終メッセージで4点を伝える)だけを行い、start と done は呼ばない(hook も tick 起動中の done を拒否する)。スクリプトは、Read した SKILL.md と同じディレクトリの `scripts/vdgg-watch.sh` を使う(本文の `${CLAUDE_SKILL_DIR}` はそのディレクトリ)。無人実行は `--permission-mode dontAsk` で動き、lock 時点の `allow_tools` のツールは tick が自動で許可に加える(Slack などへの通知もこれで通る)。子の出力は `<G>/.claude/last-tick.log` に残る。
+
+手動で回すときは従来どおり start → run → done。見張りの最中に tick を止めたいなら、cwd を `<G>` にして start する(tick は `<G>/.claude` のマーカーだけを見る)。
 
 承認(approvals)が無い外部操作は行わない。

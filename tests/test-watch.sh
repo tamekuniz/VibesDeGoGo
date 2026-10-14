@@ -141,4 +141,323 @@ ln -s "$G6/artifact/a.md" "$G6/checks/evil.sh"
 w run "$G6"; rc=$?
 assert_exit_code 4 "$rc" "run rejects symlink in checks"
 
+# tick: 証拠ログの鮮度でキックするかどうかを判定する
+mkfake() {
+    local bin="$1" marker="$2" calls="$3" mline="$4" pidfile="$5"
+    local selfsleep="${6:-0}" childsleep="${7:-1}" ignoreterm="${8:-0}"
+    : > "$bin"
+    printf '#!/bin/bash\n' >> "$bin"
+    printf 'printf "CALL\\n" >> %s\n' "$calls" >> "$bin"
+    printf 'printf "%%s\\n" "$@" >> %s\n' "$calls" >> "$bin"
+    printf 'if [ -e %s ]; then sed -n 2p %s > %s; else : > %s; fi\n' "$marker" "$marker" "$mline" "$mline" >> "$bin"
+    if [ "$ignoreterm" = "1" ]; then
+        printf 'trap "" TERM\n' >> "$bin"
+    fi
+    printf 'sleep %s &\n' "$childsleep" >> "$bin"
+    printf 'printf "%%s\\n%%s\\n" "$$" "$!" > %s\n' "$pidfile" >> "$bin"
+    printf 'sleep %s\n' "$selfsleep" >> "$bin"
+    printf 'exit 0\n' >> "$bin"
+    chmod +x "$bin"
+}
+CALLS="$TMP/claude-calls"; MLINE="$TMP/claude-mline"; FAKE="$TMP/fake-claude.sh"; PIDFILE="$TMP/claude-pids"
+
+# (a) 新しい証拠があれば呼ばれない
+G8="$TMP/g8"; mkdir -p "$G8/evidence"
+echo x > "$G8/evidence/fresh.log"
+mkfake "$FAKE" "$G8/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G8" 3600 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: fresh evidence exits 0"
+assert_file_not_exists "$CALLS" "tick: fresh evidence does not call claude"
+
+# (b) 証拠が無ければ1回呼ばれ、引数・マーカー・checks.lock の allow_tools が仕様どおり
+G7="$TMP/g7"; mkgoal "$G7"
+printf 'goal\nallow_tools: Bash,Task\n' > "$G7/goal.md"
+w lock "$G7"
+MARKER7="$G7/.claude/.vdgg-watch-active"
+mkfake "$FAKE" "$MARKER7" "$CALLS" "$MLINE" "$PIDFILE"
+rm -f "$CALLS" "$MLINE" "$PIDFILE"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G7" 60 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: no evidence calls claude"
+assert_file_exists "$CALLS" "tick: claude was invoked"
+ARGS="$(cat "$CALLS")"
+if ! grep -Fxq -- "-p" "$CALLS"; then
+    fail "tick args: -p must appear as its own argument"
+fi
+if ! awk '$0=="--permission-mode"{getline nxt; if (nxt=="dontAsk") f=1} END{exit !f}' "$CALLS"; then
+    fail "tick args: --permission-mode must be immediately followed by dontAsk"
+fi
+assert_contains "$ARGS" "--settings" "tick args: settings flag"
+assert_contains "$ARGS" "vdgg-watch-hook.sh" "tick args: hook path in settings"
+assert_contains "$ARGS" "SKILL.md" "tick args: SKILL.md path in prompt"
+assert_contains "$ARGS" "目標: $G7" "tick args: goal in prompt"
+assert_contains "$ARGS" "Task" "tick args: checks.lock allow_tools tool present"
+case "$ARGS" in
+    *Skill*) fail "tick args: Skill must not be in allowedTools" ;;
+esac
+MLINE_CONTENT="$(cat "$MLINE")"
+case "$MLINE_CONTENT" in
+    "tick "*) ;;
+    *) fail "tick: marker during call was not 'tick <pid>' (got '$MLINE_CONTENT')" ;;
+esac
+assert_file_not_exists "$MARKER7" "tick: marker removed after claude exits"
+
+# (c) 古い証拠があれば呼ばれる
+G9="$TMP/g9"; mkdir -p "$G9/evidence"
+touch -t 202001010000 "$G9/evidence/old.log"
+mkfake "$FAKE" "$G9/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G9" 5 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: old evidence calls claude"
+assert_file_exists "$CALLS" "tick: old evidence triggers claude"
+
+# (d) 生きた PID のマーカーがあれば呼ばれない
+G10="$TMP/g10"; mkdir -p "$G10/.claude"
+sleep 60 &
+ALIVE=$!
+printf '%s\ntick %s\n' "$G10" "$ALIVE" > "$G10/.claude/.vdgg-watch-active"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G10" 5 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: alive tick pid does not call claude"
+assert_file_not_exists "$CALLS" "tick: alive pid blocks claude"
+assert_file_exists "$G10/.claude/.vdgg-watch-active" "tick: alive-pid marker left in place"
+kill "$ALIVE" 2>/dev/null || true
+wait "$ALIVE" 2>/dev/null || true
+
+# (e) 死んだ PID のマーカーは消されて呼ばれる
+G11="$TMP/g11"; mkdir -p "$G11/.claude"
+( exit 0 ) &
+DEADPID=$!
+wait "$DEADPID" 2>/dev/null || true
+printf '%s\ntick %s\n' "$G11" "$DEADPID" > "$G11/.claude/.vdgg-watch-active"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G11" 5 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: dead pid marker gets cleaned and claude runs"
+assert_file_exists "$CALLS" "tick: dead-pid marker triggers claude"
+
+# (f) 間隔が不正なら usage
+for bad in abc 0 010; do
+    VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$TMP/whatever" "$bad" >/dev/null 2>&1; rc=$?
+    assert_exit_code 1 "$rc" "tick: invalid interval '$bad' is rejected"
+done
+
+# (g) 起動元の cwd に関わらずマーカーは G 直下に作られる
+G12="$TMP/g12"; mkgoal "$G12"; w lock "$G12"
+mkfake "$FAKE" "$G12/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE"
+rm -f "$CALLS" "$MLINE"
+(cd "$TMP" && VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G12" 5 >/dev/null 2>&1); rc=$?
+assert_exit_code 0 "$rc" "tick: runs from outside G"
+MLINE_CONTENT="$(cat "$MLINE")"
+case "$MLINE_CONTENT" in
+    "tick "*) ;;
+    *) fail "tick: marker not created under G when invoked from outside cwd" ;;
+esac
+assert_file_not_exists "$G12/.claude/.vdgg-watch-active" "tick: marker cleaned up after run (cwd test)"
+
+# (i) 上限時間を超えたら子を止めて exit 124
+G13="$TMP/g13"; mkdir -p "$G13"
+SLOWCLAUDE="$TMP/slow-claude.sh"
+printf '#!/bin/bash\nsleep 5\n' > "$SLOWCLAUDE"
+chmod +x "$SLOWCLAUDE"
+start_ts=$(date +%s)
+VDGG_WATCH_CLAUDE="$SLOWCLAUDE" VDGG_WATCH_TIMEOUT=1 bash "$SCRIPT" tick "$G13" 5 >/dev/null 2>&1; rc=$?
+end_ts=$(date +%s)
+assert_exit_code 124 "$rc" "tick: exceeding timeout returns 124"
+elapsed=$(( end_ts - start_ts ))
+if [ "$elapsed" -ge 5 ]; then
+    fail "tick: timeout did not actually stop the child early (elapsed=${elapsed}s)"
+fi
+assert_file_not_exists "$G13/.claude/.vdgg-watch-active" "tick: marker removed after timeout kill"
+
+# (j) 手動マーカー(1行のみ)が新しければ claude を呼ばず残る
+G14="$TMP/g14"; mkdir -p "$G14/.claude"
+printf '%s\n' "$G14" > "$G14/.claude/.vdgg-watch-active"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G14" 5 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: fresh manual marker blocks claude"
+assert_file_not_exists "$CALLS" "tick: fresh manual marker does not call claude"
+assert_file_exists "$G14/.claude/.vdgg-watch-active" "tick: fresh manual marker left in place"
+
+# (k) 手動マーカーが古ければ消されて claude が呼ばれる
+G15="$TMP/g15"; mkdir -p "$G15/.claude"
+printf '%s\n' "$G15" > "$G15/.claude/.vdgg-watch-active"
+touch -t 202001010000 "$G15/.claude/.vdgg-watch-active"
+mkfake "$FAKE" "$G15/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G15" 5 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: stale manual marker is cleared and claude runs"
+assert_file_exists "$CALLS" "tick: stale manual marker triggers claude"
+
+# (l) 生きた PID でも上限+60秒より古いマーカーは消されて呼ばれる
+G16="$TMP/g16"; mkdir -p "$G16/.claude"
+sleep 60 &
+ALIVE2=$!
+printf '%s\ntick %s\n' "$G16" "$ALIVE2" > "$G16/.claude/.vdgg-watch-active"
+touch -t 202001010000 "$G16/.claude/.vdgg-watch-active"
+mkfake "$FAKE" "$G16/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G16" 5 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: stale alive-pid marker (older than limit+60) is cleared and claude runs"
+assert_file_exists "$CALLS" "tick: stale alive-pid marker triggers claude"
+kill "$ALIVE2" 2>/dev/null || true
+wait "$ALIVE2" 2>/dev/null || true
+
+# (m) 証拠が増えないまま2回目の tick を呼んでも、間隔内なら再実行しない
+G17="$TMP/g17"; mkdir -p "$G17"
+mkfake "$FAKE" "$G17/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G17" 3600 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: first run with no evidence calls claude"
+assert_file_exists "$CALLS" "tick: first run invoked claude"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G17" 3600 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: second run shortly after a failed run backs off"
+assert_file_not_exists "$CALLS" "tick: last-tick timestamp prevents immediate re-run"
+
+# (n) allow_tools が不正なら exit 2 になり、マーカーも作られない
+G18="$TMP/g18"; mkgoal "$G18"
+printf 'goal\nallow_tools: Bash,ba;d\n' > "$G18/goal.md"
+w lock "$G18"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G18" 60 >/dev/null 2>&1; rc=$?
+assert_exit_code 2 "$rc" "tick: invalid allow_tools exits 2"
+assert_file_not_exists "$CALLS" "tick: invalid allow_tools does not call claude"
+assert_file_not_exists "$G18/.claude/.vdgg-watch-active" "tick: invalid allow_tools leaves no marker"
+
+# (o) 孫プロセスは上限超過後に残らない。TERM を無視する子にも上限+猶予で強制終了して exit 124。呼び出しは1回だけ。
+G19="$TMP/g19"; mkdir -p "$G19"
+STUCKCLAUDE="$TMP/stuck-claude.sh"
+mkfake "$STUCKCLAUDE" "$G19/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE" 300 30 1
+rm -f "$CALLS" "$PIDFILE"
+start_ts=$(date +%s)
+VDGG_WATCH_CLAUDE="$STUCKCLAUDE" VDGG_WATCH_TIMEOUT=1 bash "$SCRIPT" tick "$G19" 5 >/dev/null 2>&1; rc=$?
+end_ts=$(date +%s)
+assert_exit_code 124 "$rc" "tick: TERM-ignoring child is force-killed and returns 124"
+elapsed=$(( end_ts - start_ts ))
+if [ "$elapsed" -ge 15 ]; then
+    fail "tick: force-kill grace period took too long (elapsed=${elapsed}s)"
+fi
+assert_eq 1 "$(grep -c '^CALL$' "$CALLS")" "tick: stuck claude invoked exactly once"
+sleep 1
+CHILD19="$(sed -n '1p' "$PIDFILE")"
+GRANDCHILD19="$(sed -n '2p' "$PIDFILE")"
+if kill -0 "$GRANDCHILD19" 2>/dev/null; then
+    kill -KILL "$GRANDCHILD19" 2>/dev/null || true
+    fail "tick: grandchild (sleep 30) survived force-kill"
+fi
+if kill -0 "$CHILD19" 2>/dev/null; then
+    kill -KILL "$CHILD19" 2>/dev/null || true
+    fail "tick: stuck claude process survived force-kill"
+fi
+assert_file_not_exists "$G19/.claude/.vdgg-watch-active" "tick: marker removed after force-kill"
+
+# (p) tick に TERM を送ると、TERM を無視する子・孫も後始末される
+G25="$TMP/g25"; mkdir -p "$G25"
+mkfake "$FAKE" "$G25/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE" 300 30 1
+rm -f "$CALLS" "$PIDFILE"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=600 bash "$SCRIPT" tick "$G25" 60 >/dev/null 2>&1 &
+TICKPID=$!
+wait_elapsed=0
+while [ ! -s "$PIDFILE" ] && [ "$wait_elapsed" -lt 5 ]; do
+    sleep 1
+    wait_elapsed=$((wait_elapsed + 1))
+done
+assert_file_exists "$PIDFILE" "tick: TERM-test child recorded its pid before the signal"
+CHILDPID25="$(sed -n '1p' "$PIDFILE")"
+GRANDCHILDPID25="$(sed -n '2p' "$PIDFILE")"
+kill -TERM "$TICKPID" 2>/dev/null || true
+wait "$TICKPID" 2>/dev/null; rc=$?
+assert_exit_code 143 "$rc" "tick: TERM to the tick process exits 143"
+sleep 1
+if kill -0 "$CHILDPID25" 2>/dev/null; then
+    kill -KILL "$CHILDPID25" 2>/dev/null || true
+    fail "tick: TERM-ignoring child survived TERM to tick"
+fi
+if kill -0 "$GRANDCHILDPID25" 2>/dev/null; then
+    kill -KILL "$GRANDCHILDPID25" 2>/dev/null || true
+    fail "tick: grandchild survived TERM to tick"
+fi
+assert_file_not_exists "$G25/.claude/.vdgg-watch-active" "tick: marker removed after TERM to tick"
+
+# (q) 正常終了後に孫プロセスが残らない
+G22="$TMP/g22"; mkdir -p "$G22"
+mkfake "$FAKE" "$G22/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE" 0 5 0
+rm -f "$CALLS" "$PIDFILE"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G22" 60 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: normal exit returns 0"
+assert_file_exists "$PIDFILE" "tick: claude wrote pidfile before exiting"
+GRANDCHILD22="$(sed -n '2p' "$PIDFILE")"
+if kill -0 "$GRANDCHILD22" 2>/dev/null; then
+    kill -KILL "$GRANDCHILD22" 2>/dev/null || true
+    fail "tick: grandchild survived a normal exit"
+fi
+
+# (r) tick を SIGKILL した後、次の tick は旧グループを止めてから1回だけ起動する
+G21="$TMP/g21"; mkdir -p "$G21"
+mkfake "$FAKE" "$G21/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE" 300 300 0
+rm -f "$CALLS" "$PIDFILE"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=600 bash "$SCRIPT" tick "$G21" 5 >/dev/null 2>&1 &
+TICK1=$!
+wait_elapsed=0
+while [ ! -s "$PIDFILE" ] && [ "$wait_elapsed" -lt 5 ]; do
+    sleep 1
+    wait_elapsed=$((wait_elapsed + 1))
+done
+assert_file_exists "$PIDFILE" "tick: SIGKILL-test child recorded its pid before the kill"
+OLDCHILD="$(sed -n '1p' "$PIDFILE")"
+OLDGRANDCHILD="$(sed -n '2p' "$PIDFILE")"
+kill -KILL "$TICK1" 2>/dev/null || true
+wait "$TICK1" 2>/dev/null
+rm -f "$CALLS"
+# last-tick が新しいので次の tick は起動しない（後退）が、孤児になった旧グループは先に止める
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=600 bash "$SCRIPT" tick "$G21" 5 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: next tick after a SIGKILLed tick succeeds"
+assert_file_not_exists "$CALLS" "tick: next tick backs off while last-tick is fresh"
+if kill -0 "$OLDCHILD" 2>/dev/null; then
+    kill -KILL "$OLDCHILD" 2>/dev/null || true
+    fail "tick: old child group leader survived SIGKILL recovery"
+fi
+if kill -0 "$OLDGRANDCHILD" 2>/dev/null; then
+    kill -KILL "$OLDGRANDCHILD" 2>/dev/null || true
+    fail "tick: old grandchild survived SIGKILL recovery"
+fi
+# last-tick を古くすると、ちょうど1回だけ起動する
+touch -t 202001010000 "$G21/.claude/last-tick"
+mkfake "$FAKE" "$G21/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G21" 5 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: run resumes once last-tick is old"
+assert_eq 1 "$(grep -c '^CALL$' "$CALLS")" "tick: resumed tick invokes claude exactly once"
+
+# (s) allow_tools がカンマの後に空白を含んでいても正規化されて動く
+G24="$TMP/g24"; mkgoal "$G24"
+printf 'goal\nallow_tools: Bash, Task\n' > "$G24/goal.md"
+w lock "$G24"
+mkfake "$FAKE" "$G24/.claude/.vdgg-watch-active" "$CALLS" "$MLINE" "$PIDFILE"
+rm -f "$CALLS"
+VDGG_WATCH_CLAUDE="$FAKE" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G24" 60 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: allow_tools with a space after the comma still runs"
+if ! awk '$0=="--allowedTools"{getline nxt; if (nxt ~ /Bash,Task$/) f=1} END{exit !f}' "$CALLS"; then
+    fail "tick args: --allowedTools must end with Bash,Task once normalized"
+fi
+
+# (t) 自分のものでないマーカーは tick_cleanup で消さない
+G23="$TMP/g23"; mkdir -p "$G23"
+MARKER23="$G23/.claude/.vdgg-watch-active"
+FOREIGN="$TMP/foreign-claude.sh"
+: > "$FOREIGN"
+printf '#!/bin/bash\n' >> "$FOREIGN"
+printf 'printf "%%s\\nforeign\\n" "%s" > "%s"\n' "$G23" "$MARKER23" >> "$FOREIGN"
+printf 'exit 0\n' >> "$FOREIGN"
+chmod +x "$FOREIGN"
+VDGG_WATCH_CLAUDE="$FOREIGN" VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G23" 60 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: exits 0 even when the marker was rewritten mid-flight"
+assert_file_exists "$MARKER23" "tick: tick_cleanup does not remove a marker it does not own"
+assert_eq "foreign" "$(sed -n '2p' "$MARKER23")" "tick: foreign marker content is preserved"
+
+# checks.lock に allow_tools 行が無くても tick は落ちずに起動する
+G20="$TMP/g20"; mkgoal "$G20"; printf 'abc  ./ok.sh\n' > "$G20/checks.lock"
+VDGG_WATCH_CLAUDE=/usr/bin/true VDGG_WATCH_TIMEOUT=5 bash "$SCRIPT" tick "$G20" 60 >/dev/null 2>&1; rc=$?
+assert_exit_code 0 "$rc" "tick: checks.lock without allow_tools line still runs"
+assert_file_not_exists "$G20/.claude/.vdgg-watch-active" "tick: marker cleaned after run without allow_tools line"
+
 echo "PASS: test-watch"

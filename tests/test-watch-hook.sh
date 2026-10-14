@@ -317,4 +317,14 @@ assert_exit_code 2 "$rc" "non-ASCII letter outside artifact denied under a UTF-8
 assert_file_exists "$G/approvals/Write" "UTF-8 locale denial does not consume approval"
 rm -f "$G/approvals/Write"
 
+# tick 起動中（マーカー2行目が tick ...）は done を拒否し、run は通す
+WT="$TMP/wt"; mkdir -p "$WT/.claude"
+printf '%s\ntick 1 1\n' "$G" > "$WT/.claude/.vdgg-watch-active"
+h "$(bjson "$WT" "bash \"$WATCH\" done")"; rc=$?
+assert_exit_code 2 "$rc" "done denied while tick owns the watch"
+h "$(bjson "$WT" "bash \"$WATCH\" run \"$G\"")"; rc=$?
+assert_exit_code 0 "$rc" "run allowed while tick owns the watch (first marker line is G)"
+h "$(bjson "$W" "bash \"$WATCH\" done")"; rc=$?
+assert_exit_code 0 "$rc" "done allowed for a manual watch"
+
 echo "PASS: test-watch-hook"
