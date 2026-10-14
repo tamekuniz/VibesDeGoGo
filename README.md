@@ -20,6 +20,7 @@ This repository holds three editions that share the workflow but target differen
 - **for Claude Code** — `skills/vibesdegogo/`, `hooks/hooks.json`, `.claude-plugin/`
 - **for Codex** — `.agents/skills/vibesdegogo/`, `.codex/hooks.json`
 - **for pi / Qwen** — `pi/`. See the [pi edition setup](pi/README.md) for launcher and requirements.
+- **vdgg-watch** — `skills/vdgg-watch/`. A sister skill, not an edition: it watches one goal while you sleep and speaks up only when a premise breaks, with evidence and a proposed fix.
 
 They are installed independently. Install only the edition you use, or both.
 
