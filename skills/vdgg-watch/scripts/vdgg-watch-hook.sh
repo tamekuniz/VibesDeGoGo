@@ -34,7 +34,10 @@ cwd="$(printf '%s' "$json" | jq -r '.cwd // empty')"
 marker="$cwd/.claude/.vdgg-watch-active"
 [ -e "$marker" ] || exit 0
 
-g="$(cat "$marker")"
+g="$(head -n 1 "$marker")"
+# 2行目が "tick ..." なら tick が起動した回。start と done は tick が受け持つ。
+tick_mode=0
+case "$(sed -n 2p "$marker")" in "tick "*) tick_mode=1 ;; esac
 [ -d "$g" ] || deny "マーカーが指す目標ディレクトリが無い: $g"
 
 tool_name="$(printf '%s' "$json" | jq -r '.tool_name // empty')"
@@ -112,8 +115,10 @@ Bash)
     watch="$script_dir/vdgg-watch.sh"
     is_safe_path "$watch$g" || deny "パスに安全な文字(英数字と._/~ -)以外が含まれるため Bash は常に拒否"
     case "$command" in
-        "bash \"$watch\" lock \"$g\""|"bash \"$watch\" run \"$g\""|"bash \"$watch\" done")
+        "bash \"$watch\" lock \"$g\""|"bash \"$watch\" run \"$g\"")
             exit 0 ;;
+        "bash \"$watch\" done")
+            [ "$tick_mode" -eq 0 ] && exit 0 ;;
     esac
     consume_approval Bash && exit 0
     deny "Bash は vdgg-watch.sh の lock/run/done(スクリプトと<G>を二重引用符で囲んだ完全一致)のみ許可"

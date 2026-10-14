@@ -5,9 +5,10 @@ shopt -s nullglob
 
 MARKER="$PWD/.claude/.vdgg-watch-active"
 PLACEHOLDER='(未記入: エージェントがここに修正案を書く)'
+TICK_CHILD_PID=""
 
 usage() {
-    echo "usage: vdgg-watch.sh start <G> | done | lock <G> | run <G>" >&2
+    echo "usage: vdgg-watch.sh start <G> | done | lock <G> | run <G> | tick <G> <秒>" >&2
     exit 1
 }
 
@@ -23,7 +24,7 @@ hashes() {
 
 allow_line() {
     local line
-    line="$(grep -m1 '^allow_tools:' "$1/goal.md" 2>/dev/null || true)"
+    line="$(grep -m1 '^allow_tools:' "$1" 2>/dev/null || true)"
     echo "${line:-allow_tools:}"
 }
 
@@ -36,11 +37,46 @@ has_symlink() {
     [ -n "$(find "$1/checks" -type l -print -quit 2>/dev/null)" ]
 }
 
+# GNU の stat -f はファイルシステム情報を exit 0 で返すので、数字かどうかで BSD/GNU を見分ける。
+# 両方失敗したら 0 を返す(存在しないファイルで set -e に落とされないため)。
+mtime() {
+    local m
+    m="$(stat -f %m "$1" 2>/dev/null)" || m=""
+    case "$m" in ''|*[!0-9]*) m="$(stat -c %Y "$1" 2>/dev/null)" || m="" ;; esac
+    case "$m" in ''|*[!0-9]*) m=0 ;; esac
+    echo "$m"
+}
+
+# プロセスグループを止める。生きていれば TERM を送り、締め切り5秒まで待ち、残っていれば KILL する。
+stop_group() {
+    local pgid="$1" deadline
+    kill -0 -- -"$pgid" 2>/dev/null || return 0
+    kill -TERM -- -"$pgid" 2>/dev/null || true
+    deadline=$(( $(date +%s) + 5 ))
+    while kill -0 -- -"$pgid" 2>/dev/null && [ "$(date +%s)" -lt "$deadline" ]; do
+        sleep 1
+    done
+    kill -0 -- -"$pgid" 2>/dev/null && kill -KILL -- -"$pgid" 2>/dev/null || true
+}
+
+# tick の EXIT/TERM/INT/HUP トラップから呼ぶ。子のプロセスグループを止め、自分のマーカーだけを消す。
+tick_cleanup() {
+    local ec=$? line2
+    [ -n "$TICK_CHILD_PID" ] && stop_group "$TICK_CHILD_PID"
+    if [ -e "$MARKER" ]; then
+        line2="$(sed -n '2p' "$MARKER")"
+        case "$line2" in
+            "tick $$"|"tick $$ "*) rm -f "$MARKER" ;;
+        esac
+    fi
+    exit "$ec"
+}
+
 cmd_start() {
     local g
     g="$(abs_dir "${1:-}")"
     if [ -e "$MARKER" ]; then
-        echo "already watching: $(cat "$MARKER")" >&2
+        echo "already watching: $(head -n 1 "$MARKER")" >&2
         exit 1
     fi
     mkdir -p "$(dirname "$MARKER")"
@@ -50,7 +86,7 @@ cmd_start() {
 cmd_done() {
     [ -e "$MARKER" ] || exit 0
     local g fix
-    g="$(cat "$MARKER")"
+    g="$(head -n 1 "$MARKER")"
     if [ -f "$g/proposal.md" ]; then
         fix="$(awk '/^## /{on=($0=="## 修正案");next} on&&NF' "$g/proposal.md")"
         if [ -z "$fix" ] || [ "$fix" = "$PLACEHOLDER" ]; then
@@ -77,7 +113,7 @@ cmd_lock() {
         echo "再 lock には approvals/relock の承認が要る" >&2
         exit 1
     fi
-    { hashes "$g"; allow_line "$g"; } > "$g/checks.lock"
+    { hashes "$g"; allow_line "$g/goal.md"; } > "$g/checks.lock"
     rm -f "$g/approvals/relock"
 }
 
@@ -150,10 +186,137 @@ PROPOSAL
     exit 3
 }
 
+cmd_tick() {
+    local g interval extra tool tools
+    local script_dir hook_path settings_json allowed
+    local prompt skill_md claude_bin timeout_sec
+    local marker_line tag pid pgid age now_epoch latest f t
+    local last_tick_file last_tick_log deadline
+    local child rc timed_out fix
+
+    interval="${2:-}"
+    [[ "$interval" =~ ^[1-9][0-9]{0,8}$ ]] || usage
+
+    g="$(abs_dir "${1:-}")"
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    cd "$g"
+    MARKER="$g/.claude/.vdgg-watch-active"
+    last_tick_file="$g/.claude/last-tick"
+    last_tick_log="$g/.claude/last-tick.log"
+
+    extra="$(allow_line "$g/checks.lock")"
+    extra="${extra#allow_tools:}"
+    extra="$(printf '%s' "$extra" | sed 's/[[:space:]]*,[[:space:]]*/,/g; s/^[[:space:]]*//; s/[[:space:]]*$//')"
+    if [ -n "$extra" ]; then
+        tools=()
+        IFS=',' read -r -a tools <<< "$extra"
+        for tool in "${tools[@]}"; do
+            [[ "$tool" =~ ^[A-Za-z0-9_*-]+$ ]] || { echo "checks.lock の allow_tools が不正: $tool" >&2; exit 2; }
+        done
+    fi
+
+    claude_bin="${VDGG_WATCH_CLAUDE:-claude}"
+    # ponytail: 既定の上限は3600秒。短くする場合は VDGG_WATCH_TIMEOUT で渡す。
+    timeout_sec="${VDGG_WATCH_TIMEOUT:-3600}"
+
+    if [ -e "$MARKER" ]; then
+        now_epoch="$(date +%s)"
+        age=$(( now_epoch - $(mtime "$MARKER") ))
+        marker_line="$(sed -n '2p' "$MARKER")"
+        case "$marker_line" in
+            "tick "*)
+                read -r tag pid pgid <<< "$marker_line"
+                if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && [ "$age" -lt $(( timeout_sec + 60 )) ]; then
+                    exit 0
+                fi
+                [ -n "${pgid:-}" ] && stop_group "$pgid"
+                rm -f "$MARKER"
+                ;;
+            *)
+                if [ "$age" -lt $(( interval * 2 )) ]; then
+                    exit 0
+                fi
+                rm -f "$MARKER"
+                ;;
+        esac
+    fi
+
+    latest=0
+    f="$(ls -t "$g/evidence" 2>/dev/null | head -n1 || true)"
+    if [ -n "$f" ] && [ -f "$g/evidence/$f" ]; then
+        latest="$(mtime "$g/evidence/$f")"
+    fi
+    if [ -f "$last_tick_file" ]; then
+        t="$(mtime "$last_tick_file")"
+        [ "$t" -gt "$latest" ] && latest="$t"
+    fi
+    if [ "$latest" -gt 0 ]; then
+        now_epoch="$(date +%s)"
+        age=$(( now_epoch - latest ))
+        [ "$age" -lt "$interval" ] && exit 0
+    fi
+
+    mkdir -p "$(dirname "$MARKER")"
+    # ponytail: launchd は同じジョブを重ねて起動しない前提。rm 直後の noclobber 作成の競合はここでは扱わない。
+    if ! ( set -C; printf '%s\ntick %s\n' "$g" "$$" > "$MARKER" ) 2>/dev/null; then
+        exit 0
+    fi
+    trap tick_cleanup EXIT
+    trap 'exit 143' TERM INT HUP
+
+    hook_path="$script_dir/vdgg-watch-hook.sh"
+    if ! bash -n "$hook_path" 2>/dev/null; then
+        echo "vdgg-watch-hook.sh の構文確認に失敗した: $hook_path" >&2
+        exit 2
+    fi
+    settings_json="$(jq -nc --arg h "$hook_path" '{hooks:{PreToolUse:[{matcher:"",hooks:[{type:"command",command:("bash -n " + ($h|@sh) + " && bash " + ($h|@sh) + " || exit 2")}]}]}}')"
+
+    allowed="Read,Grep,Glob,WebSearch,WebFetch,Write,Edit,Bash"
+    [ -n "$extra" ] && allowed="$allowed,$extra"
+
+    skill_md="$(cd "$script_dir/.." && pwd)/SKILL.md"
+    prompt="vdgg-watch の定期実行。目標: $g
+
+$skill_md を Read し、その手順に従え。見張りは既に開始されているので start と done は呼ばず run から始めよ。"
+
+    touch "$last_tick_file"
+    set -m
+    "$claude_bin" -p "$prompt" --permission-mode dontAsk --settings "$settings_json" --allowedTools "$allowed" </dev/null >"$last_tick_log" 2>&1 &
+    child=$!
+    set +m
+    TICK_CHILD_PID="$child"
+    printf '%s\ntick %s %s\n' "$g" "$$" "$child" > "$MARKER"
+
+    deadline=$(( $(date +%s) + timeout_sec ))
+    timed_out=0
+    while kill -0 "$child" 2>/dev/null; do
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            timed_out=1
+            break
+        fi
+        sleep 1
+    done
+    stop_group "$child"
+    rc=0
+    wait "$child" 2>/dev/null || rc=$?
+    TICK_CHILD_PID=""
+    [ "$timed_out" -eq 1 ] && rc=124
+
+    if [ -f "$g/proposal.md" ]; then
+        fix="$(awk '/^## /{on=($0=="## 修正案");next} on&&NF' "$g/proposal.md")"
+        if [ -z "$fix" ] || [ "$fix" = "$PLACEHOLDER" ]; then
+            echo "proposal.md の「## 修正案」が未記入" >&2
+        fi
+    fi
+
+    exit "$rc"
+}
+
 case "${1:-}" in
     start) shift; cmd_start "$@" ;;
     done) cmd_done ;;
     lock) shift; cmd_lock "$@" ;;
     run) shift; cmd_run "$@" ;;
+    tick) shift; cmd_tick "$@" ;;
     *) usage ;;
 esac
