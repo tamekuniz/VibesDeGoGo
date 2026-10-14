@@ -327,4 +327,35 @@ assert_exit_code 0 "$rc" "run allowed while tick owns the watch (first marker li
 h "$(bjson "$W" "bash \"$WATCH\" done")"; rc=$?
 assert_exit_code 0 "$rc" "done allowed for a manual watch"
 
+# 印つき(tick が --settings で付ける第1引数 tick)の hook は、マーカーの欠落・不正を拒否する
+ht() { printf '%s' "$1" | /bin/bash "$HOOK" tick >/dev/null 2>&1; }
+WN="$TMP/wn"; mkdir -p "$WN/.claude"
+ht "$(tjson "$WN" Read)"; rc=$?
+assert_exit_code 2 "$rc" "marked hook denies when the marker is missing"
+ht "$(tjson "$W" Read)"; rc=$?
+assert_exit_code 2 "$rc" "marked hook denies a manual one-line marker"
+ht "$(bjson "$WT" "bash \"$WATCH\" run \"$G\"")"; rc=$?
+assert_exit_code 0 "$rc" "marked hook allows run with a tick marker"
+ERR="$(printf '%s' "$(bjson "$WT" "bash \"$WATCH\" done")" | /bin/bash "$HOOK" tick 2>&1 >/dev/null)"; rc=$?
+assert_exit_code 2 "$rc" "marked hook denies done"
+assert_contains "$ERR" "tick 起動中の回では done を呼ばない" "done denial has its own message"
+
+# 2行目が pgid 無しの "tick <pid>"(claude 起動前の形)でも tick の回として扱う
+WP="$TMP/wp"; mkdir -p "$WP/.claude"
+printf '%s\ntick 1\n' "$G" > "$WP/.claude/.vdgg-watch-active"
+ht "$(bjson "$WP" "bash \"$WATCH\" run \"$G\"")"; rc=$?
+assert_exit_code 0 "$rc" "marked hook allows run with a pgid-less tick marker"
+ht "$(bjson "$WP" "bash \"$WATCH\" done")"; rc=$?
+assert_exit_code 2 "$rc" "marked hook denies done with a pgid-less tick marker"
+h "$(bjson "$WP" "bash \"$WATCH\" done")"; rc=$?
+assert_exit_code 2 "$rc" "unmarked hook denies done with a pgid-less tick marker"
+
+# 印が無くても、空でない2行目はすべて tick の回として扱う(fail closed)
+WF="$TMP/wf"; mkdir -p "$WF/.claude"
+printf '%s\nfoo\n' "$G" > "$WF/.claude/.vdgg-watch-active"
+h "$(bjson "$WF" "bash \"$WATCH\" done")"; rc=$?
+assert_exit_code 2 "$rc" "unmarked hook denies done when the second line is not empty"
+ht "$(tjson "$WF" Read)"; rc=$?
+assert_exit_code 2 "$rc" "marked hook denies a second line that is not a tick line"
+
 echo "PASS: test-watch-hook"
