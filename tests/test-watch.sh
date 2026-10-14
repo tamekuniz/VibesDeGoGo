@@ -1,5 +1,9 @@
 #!/bin/bash
 set -u
+export LC_ALL=en_US.UTF-8
+if [ "$(locale charmap 2>/dev/null)" != "UTF-8" ]; then
+    echo "NOTE: en_US.UTF-8 が無いため UTF-8 での回帰は未検証" >&2
+fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/tests/lib/assert.sh"
 

@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+export LC_ALL=C
 shopt -s nullglob
 
 MARKER="$PWD/.claude/.vdgg-watch-active"
@@ -17,7 +18,7 @@ else
 fi
 
 hashes() {
-    (cd "$1/checks" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do sha "$f"; done)
+    (cd "$1/checks" && find . -type f | sort | while IFS= read -r f; do sha "$f"; done)
 }
 
 allow_line() {

@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+export LC_ALL=C
 trap 'rc=$?; [ "$rc" -eq 0 ] || exit 2' EXIT
 
 deny() {

@@ -1,5 +1,9 @@
 #!/bin/bash
 set -u
+export LC_ALL=en_US.UTF-8
+if [ "$(locale charmap 2>/dev/null)" != "UTF-8" ]; then
+    echo "NOTE: en_US.UTF-8 が無いため UTF-8 での回帰は未検証" >&2
+fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/tests/lib/assert.sh"
 
@@ -306,5 +310,11 @@ touch "$G/approvals/Write"
 h "$(wjson "$W" Write "$TMP/報告.md")"; rc=$?
 assert_exit_code 0 "$rc" "Japanese path outside G allowed once with approval"
 assert_file_not_exists "$G/approvals/Write" "approval consumed for outside Japanese path"
+
+touch "$G/approvals/Write"
+h "$(wjson "$W" Write "$G/caf$(printf '\xc3\xa9').md")"; rc=$?
+assert_exit_code 2 "$rc" "non-ASCII letter outside artifact denied under a UTF-8 locale"
+assert_file_exists "$G/approvals/Write" "UTF-8 locale denial does not consume approval"
+rm -f "$G/approvals/Write"
 
 echo "PASS: test-watch-hook"
