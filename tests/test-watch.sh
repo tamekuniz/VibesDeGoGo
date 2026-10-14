@@ -105,6 +105,7 @@ assert_exit_code 0 "$rc" "relock with approval"
 assert_file_not_exists "$G/approvals/relock" "relock approval consumed"
 w run "$G"; rc=$?
 assert_exit_code 0 "$rc" "run after relock"
+assert_file_not_exists "$G/evidence/.last-broken" "pass clears last failure record"
 
 # empty 修正案 is rejected too, not just the placeholder text
 G3="$TMP/g3"; mkgoal "$G3"
@@ -140,6 +141,41 @@ assert_exit_code 0 "$rc" "lock before symlink added"
 ln -s "$G6/artifact/a.md" "$G6/checks/evil.sh"
 w run "$G6"; rc=$?
 assert_exit_code 4 "$rc" "run rejects symlink in checks"
+
+# 同じ崩れが続く間は記入済みの proposal.md を保って黙り、崩れ方が変われば再通知する
+G30="$TMP/g30"; mkgoal "$G30"
+printf 'cat artifact/a.md\nexit 1\n' > "$G30/checks/bad.sh"
+w lock "$G30"
+w run "$G30"; rc=$?
+assert_exit_code 3 "$rc" "first failure notifies"
+w run "$G30"; rc=$?
+assert_exit_code 3 "$rc" "same failure with unfilled 修正案 notifies again"
+printf '## 修正案\nfix it\n' > "$G30/proposal.md"
+n="$(ls "$G30/evidence" | wc -l | tr -d ' ')"
+w run "$G30"; rc=$?
+assert_exit_code 5 "$rc" "same failure stays quiet"
+assert_contains "$(cat "$G30/proposal.md")" "fix it" "same failure keeps filled proposal"
+assert_eq "$((n + 1))" "$(ls "$G30/evidence" | wc -l | tr -d ' ')" "same failure still saves evidence"
+echo y > "$G30/artifact/a.md"
+w run "$G30"; rc=$?
+assert_exit_code 3 "$rc" "changed failure notifies again"
+assert_contains "$(cat "$G30/proposal.md")" "(未記入" "changed failure resets 修正案"
+# proposal に載る末尾5行より上だけが変わっても、崩れ方の変化として再通知する
+printf 'a\n1\n2\n3\n4\n5\n' > "$G30/artifact/a.md"
+w run "$G30"
+printf '## 修正案\nfix it\n' > "$G30/proposal.md"
+printf 'b\n1\n2\n3\n4\n5\n' > "$G30/artifact/a.md"
+w run "$G30"; rc=$?
+assert_exit_code 3 "$rc" "change above the last 5 output lines notifies again"
+
+# チェックには呼び出し元のロケールが渡り、元が未設定なら未設定のまま渡る
+G31="$TMP/g31"; mkgoal "$G31"
+printf 'echo "lc=${LC_ALL-unset}"\nexit 1\n' > "$G31/checks/lc.sh"
+w lock "$G31"
+w run "$G31"
+assert_contains "$(cat "$G31/proposal.md")" "lc=en_US.UTF-8" "check sees caller LC_ALL"
+(unset LC_ALL; w run "$G31")
+assert_contains "$(cat "$G31/proposal.md")" "lc=unset" "check sees unset LC_ALL"
 
 # tick: 証拠ログの鮮度でキックするかどうかを判定する
 mkfake() {

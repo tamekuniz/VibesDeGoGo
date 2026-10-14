@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+# 内部の sort や出力整形は C で動かし、チェックには呼び出し元のロケールを渡す(user_locale)。
+if [ -n "${LC_ALL+1}" ]; then ORIG_LC=(LC_ALL="$LC_ALL"); else ORIG_LC=(-u LC_ALL); fi
 export LC_ALL=C
 shopt -s nullglob
 
@@ -31,6 +33,12 @@ allow_line() {
 abs_dir() {
     [ -n "${1:-}" ] && [ -d "$1" ] || usage
     (cd "$1" && pwd)
+}
+
+# 呼び出し元の LC_ALL(未設定なら未設定)で "$@" を実行する。
+# fork 後のサブシェルで LC_ALL を書き換えると macOS の bash が CoreFoundation 経由で落ちるので、env で子にだけ渡す。
+user_locale() {
+    env "${ORIG_LC[@]}" "$@"
 }
 
 has_symlink() {
@@ -143,13 +151,15 @@ cmd_run() {
     fi
 
     mkdir -p "$g/evidence"
-    local log broken="" c name out rc
-    log="$g/evidence/$(date -u +%Y%m%dT%H%M%SZ).log"
+    local log broken="" key="" c name out rc
+    log="$g/evidence/$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
     : > "$log"
 
     record() {
         { echo "== $1 (exit $2)"; echo "$3"; } >> "$log"
         if [ "$2" -ne 0 ]; then
+            key="${key}$1 $2 $(printf '%s' "$3" | cksum)
+"
             broken="${broken}- $1
 $(echo "$3" | tail -n 5 | sed 's/^/    /')
 "
@@ -159,7 +169,7 @@ $(echo "$3" | tail -n 5 | sed 's/^/    /')
     for c in "$g"/checks/*.sh; do
         name="$(basename "$c")"
         rc=0
-        out="$(cd "$g" && bash "$c" 2>&1)" || rc=$?
+        out="$(cd "$g" && user_locale bash "$c" 2>&1)" || rc=$?
         record "$name" "$rc" "$out"
     done
 
@@ -171,10 +181,16 @@ $(echo "$3" | tail -n 5 | sed 's/^/    /')
     { grep -q '^## 過剰' "$g/fit.md" && grep -q '^## 不足' "$g/fit.md"; } 2>/dev/null || rc=1
     record "fit.md に過剰・不足の見出しがある" "$rc" ""
 
+    local last="$g/evidence/.last-broken"
     if [ -z "$broken" ]; then
-        rm -f "$g/proposal.md"
+        rm -f "$g/proposal.md" "$last"
         exit 0
     fi
+    # 前回と同じチェックが同じ終了コード・同じ出力全文(cksum で比べる)で崩れ、修正案も記入済みなら、証拠ログだけ残して proposal.md を保ち黙る。
+    if [ -f "$g/proposal.md" ] && printf '%s' "$key" | cmp -s - "$last" && ! fix_missing "$g"; then
+        exit 5
+    fi
+    printf '%s' "$key" > "$last"
     cat > "$g/proposal.md" <<PROPOSAL
 ## 何が崩れたか
 $broken
