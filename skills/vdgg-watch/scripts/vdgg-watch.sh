@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+# 内部の sort や出力整形は C で動かし、チェックには呼び出し元のロケールを渡す(user_locale)。
+if [ -n "${LC_ALL+1}" ]; then ORIG_LC=(LC_ALL="$LC_ALL"); else ORIG_LC=(-u LC_ALL); fi
 export LC_ALL=C
 shopt -s nullglob
 
@@ -33,6 +35,12 @@ abs_dir() {
     (cd "$1" && pwd)
 }
 
+# 呼び出し元の LC_ALL(未設定なら未設定)で "$@" を実行する。
+# fork 後のサブシェルで LC_ALL を書き換えると macOS の bash が CoreFoundation 経由で落ちるので、env で子にだけ渡す。
+user_locale() {
+    env "${ORIG_LC[@]}" "$@"
+}
+
 has_symlink() {
     [ -n "$(find "$1/checks" -type l -print -quit 2>/dev/null)" ]
 }
@@ -45,6 +53,14 @@ mtime() {
     case "$m" in ''|*[!0-9]*) m="$(stat -c %Y "$1" 2>/dev/null)" || m="" ;; esac
     case "$m" in ''|*[!0-9]*) m=0 ;; esac
     echo "$m"
+}
+
+# <G>/proposal.md があり、「## 修正案」が空かプレースホルダのままなら真を返す。
+fix_missing() {
+    local fix
+    [ -f "$1/proposal.md" ] || return 1
+    fix="$(awk '/^## /{on=($0=="## 修正案");next} on&&NF' "$1/proposal.md")"
+    [ -z "$fix" ] || [ "$fix" = "$PLACEHOLDER" ]
 }
 
 # プロセスグループを止める。生きていれば TERM を送り、締め切り5秒まで待ち、残っていれば KILL する。
@@ -85,14 +101,11 @@ cmd_start() {
 
 cmd_done() {
     [ -e "$MARKER" ] || exit 0
-    local g fix
+    local g
     g="$(head -n 1 "$MARKER")"
-    if [ -f "$g/proposal.md" ]; then
-        fix="$(awk '/^## /{on=($0=="## 修正案");next} on&&NF' "$g/proposal.md")"
-        if [ -z "$fix" ] || [ "$fix" = "$PLACEHOLDER" ]; then
-            echo "proposal.md の「## 修正案」が未記入のため終了できない" >&2
-            exit 1
-        fi
+    if fix_missing "$g"; then
+        echo "proposal.md の「## 修正案」が未記入のため終了できない" >&2
+        exit 1
     fi
     rm -f "$MARKER"
 }
@@ -138,13 +151,15 @@ cmd_run() {
     fi
 
     mkdir -p "$g/evidence"
-    local log broken="" c name out rc
-    log="$g/evidence/$(date -u +%Y%m%dT%H%M%SZ).log"
+    local log broken="" key="" c name out rc
+    log="$g/evidence/$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
     : > "$log"
 
     record() {
         { echo "== $1 (exit $2)"; echo "$3"; } >> "$log"
         if [ "$2" -ne 0 ]; then
+            key="${key}$1 $2 $(printf '%s' "$3" | cksum)
+"
             broken="${broken}- $1
 $(echo "$3" | tail -n 5 | sed 's/^/    /')
 "
@@ -154,7 +169,7 @@ $(echo "$3" | tail -n 5 | sed 's/^/    /')
     for c in "$g"/checks/*.sh; do
         name="$(basename "$c")"
         rc=0
-        out="$(cd "$g" && bash "$c" 2>&1)" || rc=$?
+        out="$(cd "$g" && user_locale bash "$c" 2>&1)" || rc=$?
         record "$name" "$rc" "$out"
     done
 
@@ -166,10 +181,16 @@ $(echo "$3" | tail -n 5 | sed 's/^/    /')
     { grep -q '^## 過剰' "$g/fit.md" && grep -q '^## 不足' "$g/fit.md"; } 2>/dev/null || rc=1
     record "fit.md に過剰・不足の見出しがある" "$rc" ""
 
+    local last="$g/evidence/.last-broken"
     if [ -z "$broken" ]; then
-        rm -f "$g/proposal.md"
+        rm -f "$g/proposal.md" "$last"
         exit 0
     fi
+    # 前回と同じチェックが同じ終了コード・同じ出力全文(cksum で比べる)で崩れ、修正案も記入済みなら、証拠ログだけ残して proposal.md を保ち黙る。
+    if [ -f "$g/proposal.md" ] && printf '%s' "$key" | cmp -s - "$last" && ! fix_missing "$g"; then
+        exit 5
+    fi
+    printf '%s' "$key" > "$last"
     cat > "$g/proposal.md" <<PROPOSAL
 ## 何が崩れたか
 $broken
@@ -192,7 +213,7 @@ cmd_tick() {
     local prompt skill_md claude_bin timeout_sec
     local marker_line tag pid pgid age now_epoch latest f t
     local last_tick_file last_tick_log deadline
-    local child rc timed_out fix
+    local child rc timed_out
 
     interval="${2:-}"
     [[ "$interval" =~ ^[1-9][0-9]{0,8}$ ]] || usage
@@ -265,11 +286,8 @@ cmd_tick() {
     trap 'exit 143' TERM INT HUP
 
     hook_path="$script_dir/vdgg-watch-hook.sh"
-    if ! bash -n "$hook_path" 2>/dev/null; then
-        echo "vdgg-watch-hook.sh の構文確認に失敗した: $hook_path" >&2
-        exit 2
-    fi
-    settings_json="$(jq -nc --arg h "$hook_path" '{hooks:{PreToolUse:[{matcher:"",hooks:[{type:"command",command:("bash -n " + ($h|@sh) + " && bash " + ($h|@sh) + " || exit 2")}]}]}}')"
+    # 構文確認は hook の呼び出しごとに bash -n で行う。引数 tick は印で、hook はこれを見てマーカーの欠落・不正を拒否する。
+    settings_json="$(jq -nc --arg h "$hook_path" '{hooks:{PreToolUse:[{matcher:"",hooks:[{type:"command",command:("bash -n " + ($h|@sh) + " && bash " + ($h|@sh) + " tick || exit 2")}]}]}}')"
 
     allowed="Read,Grep,Glob,WebSearch,WebFetch,Write,Edit,Bash"
     [ -n "$extra" ] && allowed="$allowed,$extra"
@@ -302,11 +320,8 @@ $skill_md を Read し、その手順に従え。見張りは既に開始され�
     TICK_CHILD_PID=""
     [ "$timed_out" -eq 1 ] && rc=124
 
-    if [ -f "$g/proposal.md" ]; then
-        fix="$(awk '/^## /{on=($0=="## 修正案");next} on&&NF' "$g/proposal.md")"
-        if [ -z "$fix" ] || [ "$fix" = "$PLACEHOLDER" ]; then
-            echo "proposal.md の「## 修正案」が未記入" >&2
-        fi
+    if fix_missing "$g"; then
+        echo "proposal.md の「## 修正案」が未記入" >&2
     fi
 
     exit "$rc"

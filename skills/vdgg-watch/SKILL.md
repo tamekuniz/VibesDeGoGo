@@ -21,7 +21,7 @@ hooks:
 
 ## 聞く(startより前。hookはまだ動かない)
 
-ユーザーと対話し、目標・`allow_tools`(カンマ区切り、空ならRead/Grep/Glob/WebSearch/WebFetchだけ許可)・頻度(`schedule:`、省略時は1日1回)を合意して `<G>/goal.md` に書く。検証チェックを合意して `<G>/checks/*.sh` に置く。チェックが読む補助ファイルも checks/ の中に置く(checks/ は丸ごとlockの対象)。チェックは `artifact/` を読むだけにし、`artifact/` のコードを実行・sourceしない。実行して確かめたい成果物があるなら、その実行はツール呼び出しとして `allow_tools` か `approvals` の承認対象にする。
+ユーザーと対話し、目標・`allow_tools`(カンマ区切り、空ならRead/Grep/Glob/WebSearch/WebFetchだけ許可)・頻度(`schedule:`、省略時は1日1回)を合意して `<G>/goal.md` に書く。検証チェックを合意して `<G>/checks/*.sh` に置く。チェックが読む補助ファイルも checks/ の中に置く(checks/ は丸ごとlockの対象)。チェックは `artifact/` を読むだけにし、`artifact/` のコードを実行・sourceしない。実行して確かめたい成果物があるなら、その実行はツール呼び出しとして `allow_tools` か `approvals` の承認対象にする。チェックは `<G>` を作業ディレクトリにして、run を呼んだ側のロケール(`LC_ALL` など)のまま動く。
 
 合意ができたら次を実行して固定する:
 
@@ -69,6 +69,7 @@ Bashは `vdgg-watch.sh` の `lock "<G>"` / `run "<G>"` / `done` を、スクリ�
 
 - `0`: 全チェック合格。何も知らせず黙る。
 - `3`: チェックが崩れた。`<G>/proposal.md` の `## 修正案` を埋め、最終メッセージで「何が崩れたか・根拠・修正案・承認の仕方」の4点を伝える。
+- `5`: 前回の run と同じチェックが同じ終了コード・同じ出力で崩れたままで、`proposal.md` の修正案も記入済み。`proposal.md` はそのまま残り(「根拠」は最初に崩れた回のログを指したまま)、証拠ログだけ増える。何も知らせず黙る(修正案が未記入なら `3` になる)。
 - `4`: lock後に`checks/`が改ざんされた、またはシンボリックリンクがある。止めてユーザーに報告する。
 - `1`: lockが無い、`checks/*.sh`が無い、など。
 
@@ -84,7 +85,7 @@ bash "${CLAUDE_SKILL_DIR}/scripts/vdgg-watch.sh" done
 
 `vdgg-watch.sh tick "<G>" <間隔秒>` は、証拠ログ(`<G>/evidence/`)と最終起動時刻のどちらも間隔より古いときだけ、`claude -p` をヘッドレスで起動して見張りを1回回す。新しければ何もしない。前回の実行が残したマーカーは、tick の PID が死んでいるか上限時間を過ぎていれば、子のプロセスグループを止めてから片付ける。子は上限時間(既定3600秒)を超えると TERM、5秒後に KILL で止める。間隔は goal.md の `schedule:` に合わせる(既定 86400 = 1日)。
 
-launchd は毎時の `StartCalendarInterval` で tick を呼ぶ。Mac が寝ている間に過ぎた回は、起きたあとにまとめて1回実行される。Desktop アプリが閉じていても動く。launchd の下では PATH が細いので、`/bin/bash` と絶対パスを使い、claude と jq のある場所を PATH に入れる(`~` や変数は展開されない)。
+launchd は毎時の `StartCalendarInterval` で tick を呼ぶ。Mac が寝ている間に過ぎた回は、起きたあとにまとめて1回実行される。Desktop アプリが閉じていても動く。チェックが UTF-8 のロケールを前提にするなら、`EnvironmentVariables` に `LANG`(例 `ja_JP.UTF-8`)も入れる。launchd の下では PATH が細いので、`/bin/bash` と絶対パスを使い、claude と jq のある場所を PATH に入れる(`~` や変数は展開されない)。
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -119,7 +120,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.vdgg-watch.m
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.example.vdgg-watch.mygoal.plist
 ```
 
-tick 起動の回は、tick が start と done を受け持つ。エージェントは run →(exit 3 なら proposal.md の修正案を埋めて最終メッセージで4点を伝える)だけを行い、start と done は呼ばない(hook も tick 起動中の done を拒否する)。スクリプトは、Read した SKILL.md と同じディレクトリの `scripts/vdgg-watch.sh` を使う(本文の `${CLAUDE_SKILL_DIR}` はそのディレクトリ)。無人実行は `--permission-mode dontAsk` で動き、lock 時点の `allow_tools` のツールは tick が自動で許可に加える(Slack などへの通知もこれで通る)。子の出力は `<G>/.claude/last-tick.log` に残る。
+tick 起動の回は、tick が start と done を受け持つ。エージェントは run →(exit 3 なら proposal.md の修正案を埋めて最終メッセージで4点を伝える。0 と 5 なら何も伝えない)だけを行い、start と done は呼ばない(hook も tick 起動中の done を拒否する。tick は hook に印を付けて登録するので、途中でマーカーが消えたり tick のものでなくなったりすると、hook は全ツールを拒否する)。スクリプトは、Read した SKILL.md と同じディレクトリの `scripts/vdgg-watch.sh` を使う(本文の `${CLAUDE_SKILL_DIR}` はそのディレクトリ)。無人実行は `--permission-mode dontAsk` で動き、lock 時点の `allow_tools` のツールは tick が自動で許可に加える(Slack などへの通知もこれで通る)。子の出力は `<G>/.claude/last-tick.log` に残る。
 
 手動で回すときは従来どおり start → run → done。見張りの最中に tick を止めたいなら、cwd を `<G>` にして start する(tick は `<G>/.claude` のマーカーだけを見る)。
 
