@@ -79,7 +79,7 @@ Everything below the separator is a free-form memo and is never read.
 
 Syntax, one line per seat: `<seat>: <ai> [model] [effort]` or `<seat>: <ai1> [model] [effort] | <ai2> [model] [effort] | ...` for a fallback list.
 
-- Seats: `0`, `0G`, `1`, `2`, `3`, `4`, `4R`, `5`, `6`, `6R`, `7`, `8`, `9`, `SUB` (case-insensitive; `grill` is still accepted as a synonym of `0G`; `4R` is the optional plan review, see Step 4), plus `MAGI-M`, `MAGI-B`, `MAGI-C` for the three MAGI council seats (MELCHIOR / BALTHASAR / CASPER; case-insensitive), plus `*` which assigns `3, 4, 6, 6R, 7` at once — an explicit seat line wins over `*`. Every step can name the AI that runs it. Unlisted seats fall back to `primary`. The MAGI seats are outside the `*` wildcard set; they must be listed explicitly to delegate, otherwise MAGI runs those seats inline.
+- Seats: `0`, `0G`, `1`, `2`, `3`, `4`, `4R`, `5`, `6`, `6R`, `7`, `8`, `9`, `SUB` (case-insensitive; `grill` is still accepted as a synonym of `0G`; `4R` is the optional plan review, see Step 4; `AUDIT` is the Step 8.5 auditor, see Step 8.5), plus `MAGI-M`, `MAGI-B`, `MAGI-C` for the three MAGI council seats (MELCHIOR / BALTHASAR / CASPER; case-insensitive), plus `*` which assigns `3, 4, 6, 6R, 7` at once — an explicit seat line wins over `*`. Every step can name the AI that runs it. Unlisted seats fall back to `primary`. The MAGI seats are outside the `*` wildcard set; they must be listed explicitly to delegate, otherwise MAGI runs those seats inline.
 - Values: `primary` — the model this session is already running on, i.e. no delegation (`inline` is accepted as a synonym). The model shorthands `opus5`, `opus55`, `sonnet5`, `fable5`, `fable51`, `haiku45`, which expand to the bundled `claude` wrapper plus the full model id (`opus55` = `claude-opus-5-5`, `fable51` = `claude-fable-5-1`) and take one optional claude effort (`opus55 medium`). The builtins `claude` / `codex`, which run the bundled `scripts/vdgg-exec-claude.sh` / `vdgg-exec-codex.sh` wrappers with optional model and effort tokens — effort is recognized by a closed vocabulary (claude: `low|medium|high|xhigh|max`, codex: `minimal|low|medium|high|xhigh`), any other token is the model. Or a bare executor name resolved through `executors/<name>.conf` containing one `COMMAND=/absolute/path/to/executable` line; bare names take no extra tokens — bake fixed settings into that command.
 - `vdgg_formation_preflight` warns (it never fails) about model names that look mistyped: a claude model must be an alias (`opus`, `sonnet`, `haiku`, `fable`) or `claude-<family>-<version>`, and a codex model must appear in the local Codex catalog (`model_catalog_json` in `${CODEX_HOME:-~/.codex}/config.toml`, else `models_cache.json` there). Without a Codex catalog there is nothing to compare with, and no codex warning is printed.
 - Seat `SUB` names the model for the in-process subagents a step launches (the Step 6-R researcher, simplify's angle finders). It is outside the `*` wildcard. `vdgg_subagent_model` prints `inline` (no SUB seat: inherit this session's model), `agent <family> [effort]` (pass `<family>` — `opus`, `sonnet`, `haiku` or `fable` — as the subagent's model; the effort applies only where the launcher accepts one), or `executor` (SUB names another vendor or executor: run that work with `vdgg_executor_run STEP_SUB_AI` instead).
@@ -177,6 +177,11 @@ tasks/vdgg/{id}/todo.md           task list with plan evidence (Step 4)
 tasks/vdgg/{id}/progress.md       progress, retry notes, plan reconciliation
 tasks/vdgg/{id}/patch/            Step 6 patches applied with vdgg_patch_apply
 tasks/vdgg/{id}/review/           vdgg_plan_diff reports
+tasks/vdgg/{id}/findings.md       every review finding: original severity and what was done
+tasks/vdgg/{id}/evidence/         files that prove acceptance criteria were verified
+tasks/vdgg/{id}/confession.md     Step 8.5 confession
+tasks/vdgg/{id}/audit.md          Step 8.5 auditor's report (vdgg_audit_run)
+.claude/.vdgg-audit-{id}          audit verdict bound to the confession (helper-written)
 .claude/.vdgg-read-{id}           files read during Step 3 (hook-written)
 .claude/.vdgg-task-patchchain-{id} Step 6 patch chain (helper-written)
 ```
@@ -226,6 +231,8 @@ Before starting the state machine, agree with the user on:
 1. Goal: what state or user value should be achieved.
 2. Constraints: what must not change and what boundaries apply.
 3. Acceptance criteria: concrete checks that determine completion.
+
+Every acceptance criterion must be verifiable in this environment by the agent itself: name how it will be checked and confirm that the device, account, or data it needs is available here. A criterion that cannot be checked here is rewritten until it can be, before the user accepts the draft; Step 8.5 lets no criterion through unverified, and the user cannot waive one later.
 
 Draft these three items in chat. Ask questions only for ambiguity that cannot be safely resolved. Start Step 1 only after the user clearly accepts the draft.
 
@@ -612,6 +619,17 @@ This stops convergence-loops on cosmetic findings while keeping the hook discipl
 
 When listing findings, always assign an explicit `severity` field per finding so the classification is auditable. If simplify's own output omits severity, classify each finding yourself before deciding the response.
 
+Record every finding of every review in `tasks/vdgg/{id}/findings.md`, one line each, numbered across the whole session, with the severity the reviewer gave and what was done:
+
+```text
+- F1 [medium] bench hides the curl error body → 修正（loop 2）
+- F2 [medium] lsof runs twice per port → low（根拠: 実測 60ms/回、2 秒周期に対して軽い）
+- F3 [medium] Id::unique changes every frame → 誤検知（根拠: ソース id.rs:91 はシード固定のハッシュ）
+- F4 [low] GB constant is duplicated → followup
+```
+
+A high or medium finding whose disposition does not start with 修正 is a downgrade: Step 8.5 requires it in the confession, with its evidence (a measurement, a source location) or the words 判断のみ.
+
 After successful verification and simplify review:
 
 ```bash
@@ -708,6 +726,42 @@ Sweep rules:
 - New low findings discovered inside a `TF` task go to `followup-final.md` (append, never overwrite) and are NOT queued — list them in the completion report as residue.
 - An item judged unsafe or out of scope to fix is marked `residue` in the queue with the reason and listed in the completion report.
 
+## Step 8.5: Confession
+
+Before the commit, write `tasks/vdgg/{id}/confession.md`: the agent's honest account of where this run fell short of the workflow. It has exactly these five sections, each with a non-empty body. A section with nothing in it says `なし（確認方法: ...）`, naming how that was checked.
+
+```markdown
+## 受け入れ条件の照合表
+- [検証済み] <criterion, in plain words> — <what was done to check it> — evidence/<file>
+- [未検証] <criterion> — <why it is not verified>
+
+## severity 格下げ
+- F2 <finding> medium → low。根拠: <measurement / source location / 判断のみ>
+
+## ゲートの形式回避
+- <a gate satisfied in form rather than in intent, and what was done instead>
+
+## 範囲縮小
+- <residue, a requirement dropped or changed, and why>
+
+## ゲート誤合格
+- <a gate that recorded a pass that should have failed, and what was done about it>
+```
+
+Write it for a reader who cannot read code: plain Japanese, no jargon, what was checked and how. The ledger has one row per acceptance criterion in `requirements.md`, and each 検証済み row names its proof under `tasks/vdgg/{id}/evidence/` (command output, a screenshot).
+
+A 未検証 row keeps the commit closed. Verify it here and save the evidence; when the check shows something to fix, return to Step 5 and fix it as a task. A criterion that cannot be verified in this environment is accepted as such for two reasons only, a missing physical device or a missing external account: stop with `[Intentional Stop]`, do not commit, and tell the user in plain words what they can do (for example, connect the iPhone). The user cannot waive an unverified criterion: they rely on this workflow, not on reading the code.
+
+Then run the auditor:
+
+```bash
+vdgg_audit_run
+```
+
+It gives a reader that never saw this session (the Formation's `AUDIT` seat, or by default a fresh-context `claude` run) the confession together with `requirements.md`, `findings.md`, `progress.md`, the followup files, the friction log, the evidence files and the diff, and asks it for discrepancies. The verdict is the last line of `audit.md`; only `監査判定: 一致` is recorded, and only for this exact confession. On 不一致, correct the confession or the work and run it again; editing the confession after the audit means auditing it again.
+
+The 8 -> 9 gate refuses `vdgg_state_advance 9 commit` while any of these holds: a section is missing or empty, or says なし without 確認方法; the ledger's row count differs from the acceptance criteria; a 検証済み row names no evidence file or a missing one; a row is 未検証; `findings.md` is missing, or a high/medium finding not fixed is absent from `severity 格下げ`; the friction log records refused calls before Step 8 while `ゲートの形式回避` says なし; `progress.md` records residue while `範囲縮小` says なし; the audit is missing, not 一致, or older than the confession.
+
 ## Step 9: Commit
 
 Advance:
@@ -766,7 +820,9 @@ After PR creation or trunk commit/push decision:
 vdgg_state_clear
 ```
 
-Then provide a friendly completion report: what finished, what was verified, what the user needs to do next, build/version numbers if any, short technical details, any residual low findings from the followup sweep (with the reason each was left), a lessons line (`lessons applied: N / new: M`), and a friction line (`gates fired: denies N / stops M / loops L`) copied from the `denies=` / `stops=` / `loops=` lines `vdgg_state_clear` just printed (it deletes the log, so a later `vdgg_friction_report` reads zeros), stated as a plain record without judging whether the numbers are high or low.
+`vdgg_state_clear` prints `confession=<未検証 N 件 ／ 格下げ N 件 ／ 回避 N 件>` and appends the confessed workarounds and downgrades to `lessons.md`, so later sessions read them in Step 3.
+
+Then provide a friendly completion report. Its first line is that summary (`未検証 0 件 ／ 格下げ N 件 ／ 回避 N 件`), followed by the full text of `confession.md`, unabridged. Then: what finished, what was verified, what the user needs to do next, build/version numbers if any, short technical details, any residual low findings from the followup sweep (with the reason each was left), a lessons line (`lessons applied: N / new: M`), and a friction line (`gates fired: denies N / stops M / loops L`) copied from the `denies=` / `stops=` / `loops=` lines `vdgg_state_clear` just printed (it deletes the log, so a later `vdgg_friction_report` reads zeros), stated as a plain record without judging whether the numbers are high or low.
 
 ## Stop Conditions
 
@@ -793,4 +849,5 @@ When stopping intentionally, include `[Intentional Stop]` in assistant text and 
 - [ ] Step 7: verify, reconcile plan and diff (`vdgg_plan_diff`), run simplify, and only then mark verified.
 - [ ] Step 6-R: if needed, investigate failure, record one hypothesis, and retry.
 - [ ] Step 8: update progress/version, run the followup sweep for remaining low findings, and request validation.
+- [ ] Step 8.5: write `confession.md` (every acceptance criterion verified with evidence), run `vdgg_audit_run` until 一致.
 - [ ] Step 9: commit, push/PR according to workflow, clear state, and report.

@@ -737,8 +737,12 @@ case "$PHASE" in
         # No code edits after verification; only progress/version metadata may change.
         if [ -n "${FILE_PATH:-}" ]; then
             if { [ "$PHASE" = "progress" ] || [ "$PHASE" = "commit" ]; } && [ -n "$FILE_PATH" ]; then
-                # progress.md remains editable for validation and commit notes.
-                if [[ "$FILE_PATH" == "${TASKS_DIR}/progress.md" ]]; then
+                # progress.md remains editable for validation and commit notes;
+                # the Step 8.5 confession and its records are written here too.
+                if [[ "$FILE_PATH" == "${TASKS_DIR}/progress.md" ]] \
+                    || [[ "$FILE_PATH" == "${TASKS_DIR}/confession.md" ]] \
+                    || [[ "$FILE_PATH" == "${TASKS_DIR}/findings.md" ]] \
+                    || [[ "$FILE_PATH" == "${TASKS_DIR}"/evidence/* ]]; then
                     exit 0
                 fi
                 # Version files explicitly configured in `.vdgg-target` are allowed.
@@ -760,6 +764,23 @@ case "$PHASE" in
             fi
             echo "VibesDeGoGo! Step ${STEP} (${PHASE}) [${VDGG_ID}]: This action is blocked in the current phase." >&2
             exit 2
+        fi
+        # Step 8.5 confession: leaving Step 8 for the commit needs a confession
+        # that passes the mechanical checks and an audit of that very text.
+        if [ "$TOOL_NAME" = "Bash" ] && [ "$PHASE" = "progress" ] \
+            && echo "$GATE_COMMAND" | grep -qE 'vdgg_state_(advance|loop|write)[[:space:]]+9[[:space:]]+commit([^[:alnum:]_-]|$)'; then
+            _vdgg_load_evidence
+            if ! CONF_PROBLEMS=$(_vdgg_ev_check_confession "$TASKS_DIR" "$CWD/.claude/.vdgg-friction-${VDGG_ID}"); then
+                {
+                    echo "VibesDeGoGo! Step ${STEP} (progress) [${VDGG_ID}]: Step 8.5 confession is not complete (SKILL.md Step 8.5):"
+                    printf '%s\n' "$CONF_PROBLEMS" | sed 's/^/  - /'
+                } >&2
+                exit 2
+            fi
+            if ! AUDIT_PROBLEMS=$(_vdgg_ev_check_audit "$CWD/.claude/.vdgg-audit-${VDGG_ID}" "${TASKS_DIR}/confession.md"); then
+                echo "VibesDeGoGo! Step ${STEP} (progress) [${VDGG_ID}]: Step 8.5 audit: ${AUDIT_PROBLEMS}" >&2
+                exit 2
+            fi
         fi
         # branch-pr workflow forbids committing or pushing directly on the base branch.
         if [ "$TOOL_NAME" = "Bash" ] && [ "$PHASE" = "commit" ]; then

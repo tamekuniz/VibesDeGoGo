@@ -820,6 +820,200 @@ _vdgg_ev_check_reconciliation() {
     return 1
 }
 
+# --- Step 8.5 confession ------------------------------------------------------
+#
+# confession.md is the agent's own account of where the run fell short: which
+# acceptance criteria were verified (each with an evidence file) and which were
+# not, every high/medium review finding it did not fix, every gate it satisfied
+# in form rather than in intent, every piece of scope it dropped, and every gate
+# that passed when it should have failed. The 8 -> 9 gate checks what can be
+# checked mechanically -- the headings, one ledger row per acceptance criterion,
+# evidence files that exist, and findings.md, the friction log and progress.md
+# against what the confession admits. Whether the text is true is the job of the
+# auditor (vdgg_audit_run), whose verdict is bound to this exact confession.
+
+# Body of one `## <heading>` section, blank lines dropped.
+_vdgg_ev_section() {
+    [ -f "$1" ] || return 0
+    VDGG_EV_HEAD="$2" awk '
+        /^## / {
+            h = substr($0, 4)
+            sub(/[ \t]+$/, "", h)
+            on = (h == ENVIRON["VDGG_EV_HEAD"])
+            next
+        }
+        on && NF { print }
+    ' "$1"
+}
+
+# True when a section body declares there is nothing to confess.
+_vdgg_ev_says_none() {
+    case "$1" in
+        なし*) return 0 ;;
+    esac
+    return 1
+}
+
+# Number of `- [<tag>]` rows in a section body.
+_vdgg_ev_count_rows() {
+    printf '%s\n' "$1" | grep -cE "^- \\[$2\\]" || true
+}
+
+# Number of list items in a section body; a "なし" body counts 0.
+_vdgg_ev_count_items() {
+    if _vdgg_ev_says_none "$1"; then
+        printf '0\n'
+        return 0
+    fi
+    printf '%s\n' "$1" | grep -cE '^([-*]|[0-9]+[.)])[[:space:]]+' || true
+}
+
+# Problems with the confession, one per line; returns 1 when there are any.
+# <dir> is tasks/vdgg/{id} (requirements.md, confession.md, findings.md,
+# progress.md, evidence/); <friction> is the session's friction log.
+_vdgg_ev_check_confession() {
+    local dir="$1" friction="$2" conf="$1/confession.md" out="" sec body n_req n_row n_unv n_deny rows ref id ids down
+    if [ ! -f "$conf" ]; then
+        printf 'confession.md is missing: write tasks/vdgg/<id>/confession.md (SKILL.md Step 8.5)\n'
+        return 1
+    fi
+    for sec in "受け入れ条件の照合表" "severity 格下げ" "ゲートの形式回避" "範囲縮小" "ゲート誤合格"; do
+        body=$(_vdgg_ev_section "$conf" "$sec")
+        if [ -z "$body" ]; then
+            out="${out}## ${sec}: the heading is missing or its body is empty
+"
+        elif _vdgg_ev_says_none "$body" && ! printf '%s\n' "$body" | grep -q '確認方法'; then
+            out="${out}## ${sec}: なし must say how it was checked (なし（確認方法: ...）)
+"
+        fi
+    done
+
+    # Ledger: one tagged row per acceptance criterion.
+    body=$(_vdgg_ev_section "$conf" "受け入れ条件の照合表")
+    n_req=$(_vdgg_ev_count_items "$(_vdgg_ev_section "$dir/requirements.md" "Acceptance criteria")")
+    n_row=$(printf '%s\n' "$body" | grep -cE '^- \[(検証済み|未検証)\]' || true)
+    if [ "${n_req:-0}" -eq 0 ]; then
+        out="${out}requirements.md lists no acceptance criteria (list items under ## Acceptance criteria)
+"
+    elif [ "${n_row:-0}" -ne "$n_req" ]; then
+        out="${out}the ledger has ${n_row:-0} rows but requirements.md lists ${n_req} acceptance criteria: one row per criterion
+"
+    fi
+    if printf '%s\n' "$body" | grep -E '^- ' | grep -qvE '^- \[(検証済み|未検証)\]'; then
+        out="${out}every ledger row starts with - [検証済み] or - [未検証]
+"
+    fi
+    n_unv=$(_vdgg_ev_count_rows "$body" "未検証")
+    if [ "${n_unv:-0}" -gt 0 ]; then
+        out="${out}${n_unv} acceptance criteria are 未検証: verify each here and save the evidence under evidence/ (return to Step 5 when a fix is needed). When one cannot be verified in this environment -- only for a missing physical device or a missing external account -- stop with [Intentional Stop] and do not commit. The user cannot waive this.
+"
+    fi
+    rows=$(printf '%s\n' "$body" | grep -E '^- \[検証済み\]' || true)
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        ref=$(printf '%s\n' "$row" | grep -oE 'evidence/[^][ ()`"'\'',、）]+' || true)
+        if [ -z "$ref" ]; then
+            out="${out}検証済み row without an evidence/ file: ${row}
+"
+            continue
+        fi
+        while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            if [ ! -f "$dir/$id" ]; then
+                out="${out}evidence file not found: ${id}
+"
+            fi
+        done <<EOF
+$ref
+EOF
+    done <<EOF
+$rows
+EOF
+
+    # Every high/medium finding that was not fixed is a downgrade.
+    down=$(_vdgg_ev_section "$conf" "severity 格下げ")
+    if [ ! -f "$dir/findings.md" ]; then
+        out="${out}findings.md is missing: record every review finding with its original severity and what was done (SKILL.md Step 7)
+"
+    else
+        ids=$(awk '
+            /^- F[0-9]+ \[(high|medium)\]/ {
+                n = index($0, "→")
+                d = (n > 0) ? substr($0, n + length("→")) : ""
+                sub(/^[ \t]+/, "", d)
+                if (index(d, "修正") != 1) print $2
+            }
+        ' "$dir/findings.md")
+        while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            if ! printf '%s\n' "$down" | grep -qE "(^|[^0-9A-Za-z])${id}([^0-9]|\$)"; then
+                out="${out}finding ${id} was high/medium and not fixed, but ## severity 格下げ does not list it
+"
+            fi
+        done <<EOF
+$ids
+EOF
+    fi
+
+    # What the session's own records show cannot be confessed away as なし.
+    # Refusals in progress are this gate's own and the edits it blocks; the
+    # ones before Step 8 are what the confession must account for.
+    n_deny=$(grep '^deny ' "$friction" 2>/dev/null | grep -cv '^deny phase=progress ' || true)
+    if [ "${n_deny:-0}" -gt 0 ] \
+        && _vdgg_ev_says_none "$(_vdgg_ev_section "$conf" "ゲートの形式回避")"; then
+        out="${out}the friction log records ${n_deny} refused tool calls before Step 8, but ## ゲートの形式回避 says なし: account for each one
+"
+    fi
+    if [ -f "$dir/progress.md" ] && grep -qi 'residue' "$dir/progress.md" \
+        && _vdgg_ev_says_none "$(_vdgg_ev_section "$conf" "範囲縮小")"; then
+        out="${out}progress.md records residue, but ## 範囲縮小 says なし: list what was left and why
+"
+    fi
+
+    if [ -n "$out" ]; then
+        printf '%s' "$out"
+        return 1
+    fi
+    return 0
+}
+
+# The auditor's verdict counts only for the confession it read: the sentinel
+# vdgg_audit_run writes carries the confession's hash.
+_vdgg_ev_check_audit() {
+    local sentinel="$1" conf="$2" want got
+    if [ ! -f "$sentinel" ]; then
+        printf 'no audit: run vdgg_audit_run after the confession is final\n'
+        return 1
+    fi
+    want=$(_vdgg_ev_hash "$conf")
+    got=$(sed -n 's/^confession=//p' "$sentinel" | head -n 1)
+    if [ "$got" != "$want" ]; then
+        printf 'the confession changed after the audit: run vdgg_audit_run again\n'
+        return 1
+    fi
+    return 0
+}
+
+# First line of the completion report.
+_vdgg_ev_confession_summary() {
+    local conf="$1"
+    printf '未検証 %s 件 ／ 格下げ %s 件 ／ 回避 %s 件\n' \
+        "$(_vdgg_ev_count_rows "$(_vdgg_ev_section "$conf" "受け入れ条件の照合表")" "未検証")" \
+        "$(_vdgg_ev_count_items "$(_vdgg_ev_section "$conf" "severity 格下げ")")" \
+        "$(_vdgg_ev_count_items "$(_vdgg_ev_section "$conf" "ゲートの形式回避")")"
+}
+
+# Workarounds and downgrades the confession admits, as lessons.md lines.
+_vdgg_ev_confession_lessons() {
+    local conf="$1" sec body
+    for sec in "ゲートの形式回避" "severity 格下げ"; do
+        body=$(_vdgg_ev_section "$conf" "$sec")
+        _vdgg_ev_says_none "$body" && continue
+        printf '%s\n' "$body" | grep -E '^([-*]|[0-9]+[.)])[[:space:]]+' \
+            | sed -E "s/^([-*]|[0-9]+[.)])[[:space:]]+/- [告白: ${sec}] /" || true
+    done
+}
+
 # Print the Location paths of one task in todo.md.
 _vdgg_ev_plan_locations() {
     [ -f "$1" ] || return 0

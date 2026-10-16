@@ -11,6 +11,18 @@ grouped by edition. Their histories are merged into this repository.
 
 ### Added
 
+- Step 8.5 confession (Claude Code edition): `vdgg_state_advance 9 commit`
+  needs `tasks/vdgg/{id}/confession.md` with five sections (acceptance
+  ledger, severity downgrades, gate workarounds, scope reductions, false gate
+  passes). The gate checks one ledger row per acceptance criterion, an
+  existing `evidence/` file for each verified row, no unverified row (no user
+  waiver), `findings.md` against the downgrades, the friction log and residue
+  against なし, and an audit by `vdgg_audit_run` (Formation seat `AUDIT`, or a
+  fresh-context claude run) bound to the confession's hash.
+  `vdgg_state_clear` prints the summary line and carries confessed
+  workarounds and downgrades into `lessons.md`. Step 0 requires acceptance
+  criteria verifiable in the environment; Step 7 records every finding in
+  `findings.md`.
 - Formation model and effort syntax (both editions; proposal item 6):
   shorthands `opus55` (`claude-opus-5-5`) and `fable51` (`claude-fable-5-1`);
   a shorthand may carry one effort (`opus55 medium`); claude effort accepts

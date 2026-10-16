@@ -52,6 +52,7 @@ vdgg_codemod_apply <expected-files> <command> [args...]
 vdgg_plan_diff [task-id]
 vdgg_check_investigation
 vdgg_check_plan
+vdgg_audit_run
 vdgg_state_clear
 vdgg_friction_report
 vdgg_get_tasks_dir
@@ -115,6 +116,17 @@ verified gate accepts either the
 simplify sentinel or this review sentinel; both flip to `modified=1` when
 implementation files are edited afterward in the same loop. See `SKILL.md`
 Step 7 for the full gate description.
+
+`vdgg_audit_run` is the Step 8.5 audit. It writes `tasks/vdgg/{id}/audit-input.md`
+(auditor instructions, then `requirements.md`, `confession.md`, `findings.md`,
+`progress.md`, the followup files, the friction log, the evidence files and the
+diff), runs the Formation's `AUDIT` seat through `vdgg_executor_run` or, when that
+seat is unlisted, `vdgg-exec-claude.sh` (a fresh-context `claude -p` run), and
+saves the report to `tasks/vdgg/{id}/audit.md`. Only when the report's last line
+is `監査判定: 一致` does it write `.claude/.vdgg-audit-{id}` with the confession's
+hash; the 8 -> 9 gate accepts the audit only while that hash still matches.
+`vdgg_state_clear` prints `confession=<summary>` and appends the confessed
+workarounds and downgrades to the session's `lessons.md`.
 
 ## Transition Rules
 
