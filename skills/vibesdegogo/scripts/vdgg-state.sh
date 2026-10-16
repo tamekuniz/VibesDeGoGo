@@ -356,6 +356,7 @@ _vdgg_rm_session_sidecars() {
     rm -f "${VDGG_STATE_DIR}/.vdgg-error-pending" 2>/dev/null || true
     _vdgg_rm_glob "${VDGG_STATE_DIR}" '.vdgg-simplify-sentinel-*'
     _vdgg_rm_glob "${VDGG_STATE_DIR}" '.vdgg-review-sentinel-*'
+    _vdgg_rm_glob "${VDGG_STATE_DIR}" '.vdgg-audit-*'
     _vdgg_rm_glob "${VDGG_STATE_DIR}" '.vdgg-task-*'
     _vdgg_rm_glob "${VDGG_STATE_DIR}" '.vdgg-friction-*'
     _vdgg_rm_glob "${VDGG_STATE_DIR}" '.vdgg-read-*'
@@ -467,7 +468,7 @@ _vdgg_check_step_transition() {
 _vdgg_formation_keys() {
   printf '%s\n' \
     STEP_0_AI STEP_1_AI STEP_2_AI STEP_3_AI STEP_4_AI STEP_4R_AI STEP_5_AI \
-    STEP_6_AI STEP_6R_AI STEP_7_AI STEP_8_AI STEP_9_AI STEP_0_GRILL_AI STEP_SUB_AI \
+    STEP_6_AI STEP_6R_AI STEP_7_AI STEP_8_AI STEP_9_AI STEP_0_GRILL_AI STEP_SUB_AI STEP_AUDIT_AI \
     MAGI_MELCHIOR_AI MAGI_BALTHASAR_AI MAGI_CASPER_AI
 }
 
@@ -477,7 +478,7 @@ _vdgg_name_is_safe() {
 
 _vdgg_step_key_is_valid() {
   case "$1" in
-    STEP_0_AI|STEP_1_AI|STEP_2_AI|STEP_3_AI|STEP_4_AI|STEP_4R_AI|STEP_5_AI|STEP_6_AI|STEP_6R_AI|STEP_7_AI|STEP_8_AI|STEP_9_AI|STEP_0_GRILL_AI|STEP_SUB_AI) return 0 ;;
+    STEP_0_AI|STEP_1_AI|STEP_2_AI|STEP_3_AI|STEP_4_AI|STEP_4R_AI|STEP_5_AI|STEP_6_AI|STEP_6R_AI|STEP_7_AI|STEP_8_AI|STEP_9_AI|STEP_0_GRILL_AI|STEP_SUB_AI|STEP_AUDIT_AI) return 0 ;;
     MAGI_MELCHIOR_AI|MAGI_BALTHASAR_AI|MAGI_CASPER_AI) return 0 ;;
     *) return 1 ;;
   esac
@@ -520,6 +521,9 @@ _vdgg_seat_to_key() {
     # SUB: the model for in-process subagents a step launches (the Step 6-R
     # researcher, simplify's angle finders). Outside the "*" wildcard.
     [Ss][Uu][Bb]) echo STEP_SUB_AI ;;
+    # AUDIT: the Step 8.5 auditor of the confession. Outside the "*" wildcard;
+    # unlisted, vdgg_audit_run uses a fresh-context claude run.
+    [Aa][Uu][Dd][Ii][Tt]) echo STEP_AUDIT_AI ;;
     [Mm][Aa][Gg][Ii]-[Mm]) echo MAGI_MELCHIOR_AI ;;
     [Mm][Aa][Gg][Ii]-[Bb]) echo MAGI_BALTHASAR_AI ;;
     [Mm][Aa][Gg][Ii]-[Cc]) echo MAGI_CASPER_AI ;;
@@ -726,7 +730,7 @@ _vdgg_validate_formation_file() {
       key="*"
     else
       key=$(_vdgg_seat_to_key "$seat") || {
-        echo "vdgg-formation: unknown seat in $file: $seat (valid: 0, 0G, 1, 2, 3, 4, 4R, 5, 6, 6R, 7, 8, 9, SUB, MAGI-M, MAGI-B, MAGI-C, *)" >&2
+        echo "vdgg-formation: unknown seat in $file: $seat (valid: 0, 0G, 1, 2, 3, 4, 4R, 5, 6, 6R, 7, 8, 9, SUB, AUDIT, MAGI-M, MAGI-B, MAGI-C, *)" >&2
         return 1
       }
     fi
@@ -1992,7 +1996,17 @@ vdgg_state_clear() {
     # back. Calling the report after this returns would answer with zeros --
     # silently, since it reports zeros rather than failing.
     if [ -n "$id" ]; then
-        local state_file
+        local state_file conf lessons
+        # Step 8.5: the first line of the completion report, and the confessed
+        # workarounds and downgrades carried into lessons.md for later sessions.
+        conf="${VDGG_TASKS_DIR}/${id}/confession.md"
+        if [ -f "$conf" ]; then
+            printf 'confession=%s\n' "$(_vdgg_ev_confession_summary "$conf")"
+            lessons=$(_vdgg_ev_confession_lessons "$conf")
+            if [ -n "$lessons" ]; then
+                printf '%s\n' "$lessons" >> "${VDGG_TASKS_DIR}/${id}/lessons.md"
+            fi
+        fi
         vdgg_friction_report
 
         state_file=$(_vdgg_state_file_for_id "$id")
@@ -2009,6 +2023,88 @@ vdgg_state_clear() {
     _vdgg_rm_session_sidecars
 
     echo "vdgg-state: cleared (id=$id)" >&2
+}
+
+# --- Step 8.5 audit ---
+
+# Have a reader with no stake in the run compare confession.md with what the
+# session left behind, and record its verdict for this exact confession. The
+# AUDIT seat of the Formation names the reader; unlisted, it is a fresh-context
+# claude run (vdgg-exec-claude.sh), which never saw the session. The verdict is
+# the last line of audit.md: 監査判定: 一致 opens the 8 -> 9 gate, anything
+# else keeps it closed until the confession or the work is corrected.
+vdgg_audit_run() {
+    local id dir conf input output spec rc
+    id=$(_vdgg_get_active_id)
+    if [ -z "$id" ]; then
+        echo "vdgg_audit_run: no active session" >&2
+        return 1
+    fi
+    dir="${VDGG_TASKS_DIR}/${id}"
+    conf="${dir}/confession.md"
+    if [ ! -f "$conf" ]; then
+        echo "vdgg_audit_run: confession.md is missing (SKILL.md Step 8.5)" >&2
+        return 1
+    fi
+    input="${dir}/audit-input.md"
+    output="${dir}/audit.md"
+    rm -f "$output" "${VDGG_STATE_DIR}/.vdgg-audit-${id}"
+    _vdgg_audit_prompt "$dir" "$id" >| "$input"
+    spec=$(vdgg_formation_resolve STEP_AUDIT_AI "$(vdgg_formation_current)" 2>/dev/null || true)
+    if [ -n "$spec" ] && [ "$spec" != "inline" ]; then
+        if vdgg_executor_run STEP_AUDIT_AI "$input" "$output"; then rc=0; else rc=$?; fi
+    elif env "VDGG_EXECUTOR_INPUT=$input" "VDGG_EXECUTOR_OUTPUT=$output" sh "${_VDGG_SCRIPT_DIR}/vdgg-exec-claude.sh"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$rc" -ne 0 ] || [ ! -s "$output" ]; then
+        echo "vdgg_audit_run: the auditor did not produce audit.md (終了コード ${rc})" >&2
+        return 1
+    fi
+    cat "$output"
+    if [ "$(grep -v '^[[:space:]]*$' "$output" | tail -n 1)" != "監査判定: 一致" ]; then
+        echo "vdgg_audit_run: the audit found discrepancies; correct the confession or the work, then run it again" >&2
+        return 1
+    fi
+    printf 'confession=%s\n' "$(_vdgg_ev_hash "$conf")" >| "${VDGG_STATE_DIR}/.vdgg-audit-${id}"
+    echo "vdgg-state: audit recorded for id=${id}" >&2
+}
+
+# The auditor's input: its instructions, then the session's records verbatim.
+_vdgg_audit_prompt() {
+    local dir="$1" id="$2" f base
+    cat <<'EOF'
+あなたは VibesDeGoGo! の監査役です。このセッションには関わっていません。
+下の confession.md（エージェントの告白）が、同じセッションの記録と食い違っていないかだけを調べてください。
+
+確かめること:
+1. 受け入れ条件の照合表: requirements.md の受け入れ条件と 1 行ずつ対応しているか。「検証済み」の行が参照する証拠ファイルの中身は、その条件を本当に確かめているか。
+2. severity 格下げ: findings.md で修正していない high/medium が、根拠つきで載っているか。根拠が実測・ソースか「判断のみ」かが正直に書かれているか。
+3. ゲートの形式回避: friction ログの deny、progress.md、diff から、ゲートを意図ではなく形だけで満たした手順が告白から漏れていないか。
+4. 範囲縮小: residue に回したもの、要件から落としたもの、要件と違う実装が載っているか。
+5. ゲート誤合格: 失敗のはずなのに合格が記録された箇所が漏れていないか。
+
+推測で不一致にしないでください。記録に根拠がある食い違いだけを、どの記録のどこかを添えて箇条書きにします（なければ「食い違い: なし」）。
+最後の行には、次のどちらか 1 行だけを書いてください。
+監査判定: 一致
+監査判定: 不一致
+EOF
+    for f in requirements.md confession.md findings.md progress.md followup.md followup-final.md; do
+        [ -f "${dir}/${f}" ] || continue
+        printf '\n===== %s =====\n' "$f"
+        cat "${dir}/${f}"
+    done
+    printf '\n===== friction log =====\n'
+    cat "${VDGG_STATE_DIR}/.vdgg-friction-${id}" 2>/dev/null || printf '(なし)\n'
+    for f in "${dir}"/evidence/*; do
+        [ -f "$f" ] || continue
+        printf '\n===== evidence/%s (先頭 200 行) =====\n' "${f##*/}"
+        head -n 200 "$f"
+    done
+    base=$(git -C "$VDGG_CWD" merge-base HEAD "$(git -C "$VDGG_CWD" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo HEAD)" 2>/dev/null || echo HEAD)
+    printf '\n===== diff (%s..作業ツリー、先頭 80000 バイト) =====\n' "$base"
+    git -C "$VDGG_CWD" diff "$base" 2>/dev/null | head -c 80000
 }
 
 # --- Utilities ---
