@@ -496,7 +496,7 @@ _vdgg_executor_file() {
 # Seats: 0, 3, 4, 6, 6R, 7, grill (case-insensitive), plus "*" which assigns
 # the non-interactive seats 3, 4, 6, 6R, 7 at once; an explicit seat line wins
 # over "*" regardless of order. Unlisted seats default to inline.
-# Values: "inline", the builtins "claude"/"codex" (optional model and effort
+# Values: "inline", the builtins "claude"/"codex"/"agy" (optional model and effort
 # tokens, effort recognized by a per-vendor closed vocabulary), or a bare
 # executor name resolved through executors/<name>.conf as before.
 
@@ -560,6 +560,7 @@ _vdgg_is_effort_token() {
   case "$1" in
     claude) case "$2" in low|medium|high|xhigh|max) return 0 ;; esac ;;
     codex) case "$2" in minimal|low|medium|high|xhigh) return 0 ;; esac ;;
+    agy) case "$2" in low|medium|high|xhigh|max) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -602,7 +603,7 @@ _vdgg_parse_seat_value() {
       _VDGG_SEAT_MODEL=$(_vdgg_model_alias "$_VDGG_SEAT_NAME")
       _VDGG_SEAT_NAME="claude"
       ;;
-    claude|codex)
+    claude|codex|agy)
       [ -z "$extra" ] || {
         echo "vdgg-formation: too many tokens for $label: $value" >&2
         return 1
@@ -775,7 +776,7 @@ _vdgg_formation_value() {
 }
 
 # Resolve a validated seat value ("<name> [model] [effort]") to an executable.
-# A user-defined executors/<name>.conf wins over the builtin claude/codex
+# A user-defined executors/<name>.conf wins over the builtin claude/codex/agy
 # wrappers; model/effort tokens are only meaningful on the builtin path.
 _vdgg_seat_command() {
   local value="$1" label="${2:-seat value}" name bundled
@@ -790,7 +791,7 @@ _vdgg_seat_command() {
     return
   fi
   case "$name" in
-    claude|codex)
+    claude|codex|agy)
       bundled="${_VDGG_SCRIPT_DIR}/vdgg-exec-${name}.sh"
       [ -f "$bundled" ] && [ -x "$bundled" ] || {
         echo "vdgg-formation: bundled executor missing or not executable: $bundled" >&2

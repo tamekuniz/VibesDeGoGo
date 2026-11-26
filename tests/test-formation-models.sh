@@ -51,6 +51,22 @@ run_edition() {
         _vdgg_parse_seat_value "codex max" "x"
         assert_eq "max" "$_VDGG_SEAT_MODEL" "$edition: max stays a model name for codex (its effort vocabulary is unchanged)"
 
+        # Builtin agy (Antigravity CLI): model and effort tokens like claude/codex.
+        _vdgg_parse_seat_value "agy gemini-4-neon-high max" "x"
+        assert_exit_code 0 "$?" "$edition: agy takes a model and an effort"
+        assert_eq "agy" "$_VDGG_SEAT_NAME" "$edition: agy stays the agy builtin"
+        assert_eq "gemini-4-neon-high" "$_VDGG_SEAT_MODEL" "$edition: agy keeps its model"
+        assert_eq "max" "$_VDGG_SEAT_EFFORT" "$edition: agy accepts effort max"
+        _vdgg_parse_seat_value "agy minimal" "x"
+        assert_eq "minimal" "$_VDGG_SEAT_MODEL" "$edition: minimal is not an agy effort, so it is the model"
+        _vdgg_parse_seat_value "agy m1 high extra" "x" 2>/dev/null
+        assert_exit_code 1 "$?" "$edition: agy refuses a third token"
+        printf '7: agy gemini-4-neon-high | codex high\nMAGI-M: agy\n' > "$F/agy.conf"
+        vdgg_formation_preflight agy >/dev/null 2>"$T/err-$edition"
+        assert_exit_code 0 "$?" "$edition: a Formation naming agy passes preflight"
+        assert_eq "" "$(cat "$T/err-$edition")" "$edition: agy models produce no warning"
+        assert_contains "$(_vdgg_seat_command "agy gemini-4-neon-high" x)" "vdgg-exec-agy.sh" "$edition: agy runs the bundled agy wrapper"
+
         # SUB seat.
         printf '3: opus55 medium\nSUB: fable51 max\n' > "$F/sub.conf"
         vdgg_formation_preflight sub >/dev/null 2>&1

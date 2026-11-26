@@ -67,12 +67,13 @@ hook / state スクリプト内のコメントに対して、広域 `sed -i` で
 
 ## 両エディションで共通のファイル
 
-次の 7 ファイルは `skills/vibesdegogo/` と `.agents/skills/vibesdegogo/` の
+次の 8 ファイルは `skills/vibesdegogo/` と `.agents/skills/vibesdegogo/` の
 両方に存在し、byte 一致を保つ必要があります。
 
 - `scripts/vdgg-llm-start.sh`
 - `scripts/vdgg-exec-claude.sh`
 - `scripts/vdgg-exec-codex.sh`
+- `scripts/vdgg-exec-agy.sh`
 - `scripts/vdgg-evidence.sh`
 - `references/servers-conf.md`
 - `references/servers.conf.example`
@@ -88,7 +89,7 @@ hook / state スクリプトに限らず、ドキュメントやコメントだ�
 
 ```bash
 for f in scripts/vdgg-llm-start.sh scripts/vdgg-exec-claude.sh \
-         scripts/vdgg-exec-codex.sh scripts/vdgg-evidence.sh references/servers-conf.md \
+         scripts/vdgg-exec-codex.sh scripts/vdgg-exec-agy.sh scripts/vdgg-evidence.sh references/servers-conf.md \
          references/servers.conf.example references/local-inference-setup.md; do
   cmp "skills/vibesdegogo/$f" ".agents/skills/vibesdegogo/$f" || echo "OUT OF SYNC: $f"
 done

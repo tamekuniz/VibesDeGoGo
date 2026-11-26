@@ -18,6 +18,7 @@ PAIRS=(
     scripts/vdgg-llm-start.sh
     scripts/vdgg-exec-claude.sh
     scripts/vdgg-exec-codex.sh
+    scripts/vdgg-exec-agy.sh
     scripts/vdgg-evidence.sh
     references/servers-conf.md
     references/servers.conf.example

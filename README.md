@@ -49,7 +49,7 @@ A named Formation can assign any AI to each Step. Trusted configuration lives ou
   executors/gemma.conf
 ```
 
-One line per delegated seat; unlisted seats stay inline (the current agent). `*` assigns the non-interactive seats (3, 4, 6, 6R, 7) at once, and the builtins `claude` / `codex` take optional model and effort tokens:
+One line per delegated seat; unlisted seats stay inline (the current agent). `*` assigns the non-interactive seats (3, 4, 6, 6R, 7) at once, and the builtins `claude` / `codex` / `agy` take optional model and effort tokens (`agy` is Antigravity CLI on a Google AI Pro / Ultra subscription):
 
 ```text
 # formations/local-balanced.conf
@@ -124,7 +124,7 @@ skills/vibesdegogo/
 tests/
 ```
 
-Seven files are duplicated between the two trees on purpose and must stay byte-identical: the three executor wrappers (`vdgg-llm-start.sh`, `vdgg-exec-claude.sh`, `vdgg-exec-codex.sh`), the evidence-gate library (`vdgg-evidence.sh`) and the three shared references (`servers-conf.md`, `servers.conf.example`, `local-inference-setup.md`). See [CONTRIBUTING.md](CONTRIBUTING.md).
+Eight files are duplicated between the two trees on purpose and must stay byte-identical: the four executor wrappers (`vdgg-llm-start.sh`, `vdgg-exec-claude.sh`, `vdgg-exec-codex.sh`, `vdgg-exec-agy.sh`), the evidence-gate library (`vdgg-evidence.sh`) and the three shared references (`servers-conf.md`, `servers.conf.example`, `local-inference-setup.md`). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Install: Claude Code edition
 
