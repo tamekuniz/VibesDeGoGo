@@ -11,6 +11,13 @@ grouped by edition. Their histories are merged into this repository.
 
 ### Added
 
+- Builtin Formation executor `agy` (both editions): Antigravity CLI signed in
+  with a Google account, so a seat runs on a Google AI Pro / Ultra
+  subscription quota (`7: agy gemini-4-neon-high`, effort
+  `low|medium|high|xhigh|max`). agy has no read-only mode, so artifact seats
+  run it in a throwaway copy of the work tree and collect the output file
+  from there; the repository is never written.
+
 - Formation model and effort syntax (both editions; proposal item 6):
   shorthands `opus55` (`claude-opus-5-5`) and `fable51` (`claude-fable-5-1`);
   a shorthand may carry one effort (`opus55 medium`); claude effort accepts
