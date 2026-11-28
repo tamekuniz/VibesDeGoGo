@@ -28,7 +28,9 @@ brew install jq
   Most of the tree is edition-specific, but six files are shared verbatim — see
   "Files Shared Between Editions" below.
 - `.codex/hooks.json`: Codex project-local hook registration.
-- `tests/`: zero-dependency smoke tests for both editions.
+- `pi/`: pi / Qwen adapter reusing the Codex edition's state/evidence/hooks.
+- `antigravity/`: Antigravity native plugin (`plugin.json`, `hooks.json`, adapter scripts, and `vibesdegogo-agy` skill) reusing the Codex edition's state/evidence/hooks.
+- `tests/`: zero-dependency smoke tests for all editions.
 
 ## Running Tests
 

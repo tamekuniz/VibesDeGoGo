@@ -15,11 +15,12 @@ bash と jq のみ。アカウント・鍵・テレメトリなし。MIT。
 
 ## エディション
 
-このリポジトリには、ワークフローを共有しつつ対象エージェントが異なる3つのエディションが入っています。
+このリポジトリには、ワークフローを共有しつつ対象エージェントが異なる4つのエディションが入っています。
 
 - **for Claude Code** ── `skills/vibesdegogo/`、`hooks/hooks.json`、`.claude-plugin/`
 - **for Codex** ── `.agents/skills/vibesdegogo/`、`.codex/hooks.json`
 - **for pi / Qwen** ── `pi/`。起動と必要条件は [pi版README](pi/README.md) を参照。
+- **for Antigravity** ── `antigravity/`。Codex版の state / evidence / hooks を再利用する Antigravity ネイティブプラグイン。導入手順は [antigravity/README.md](antigravity/README.md) を参照。
 - **vdgg-watch** ── `skills/vdgg-watch/`。エディションではなく姉妹スキル。寝ている間も1つの目標を見張り、前提が崩れたときだけ根拠つきの修正案を出す。
 
 導入は独立しています。使う方だけ入れても、両方入れてもかまいません。
