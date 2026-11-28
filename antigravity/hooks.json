@@ -1,0 +1,42 @@
+{
+  "vibesdegogo": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ./scripts/vdgg-agy-pretool.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ./scripts/vdgg-agy-posttool.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "bash ./scripts/vdgg-agy-preinvocation.sh",
+        "timeout": 5
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "bash ./scripts/vdgg-agy-stop.sh",
+        "timeout": 10
+      }
+    ]
+  }
+}
